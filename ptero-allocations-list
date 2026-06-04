@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+source "${SCRIPT_DIR}/ptero-common.sh"
+
+ptero_require_env PTERO_NODE_ID
+
+page=1
+
+printf '%-6s %-16s %-24s %-8s %s\n' "ID" "IP" "ALIAS" "PORT" "ASSIGNED"
+printf '%-6s %-16s %-24s %-8s %s\n' "--" "--" "-----" "----" "--------"
+
+while :; do
+  response="$(ptero_api GET "/api/application/nodes/${PTERO_NODE_ID}/allocations?per_page=100&page=${page}")"
+
+  printf '%s\n' "$response" \
+    | jq -r '
+        .data[]
+        | [
+            .attributes.id,
+            .attributes.ip,
+            (.attributes.alias // "-"),
+            .attributes.port,
+            .attributes.assigned
+          ]
+        | @tsv
+      ' \
+    | while IFS=$'\t' read -r id ip alias port assigned; do
+        printf '%-6s %-16s %-24s %-8s %s\n' "$id" "$ip" "$alias" "$port" "$assigned"
+      done
+
+  total_pages="$(printf '%s\n' "$response" | jq -r '.meta.pagination.total_pages // 1')"
+
+  if [[ "$page" -ge "$total_pages" ]]; then
+    break
+  fi
+
+  page=$((page + 1))
+done

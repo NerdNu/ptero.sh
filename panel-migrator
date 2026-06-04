@@ -1,0 +1,806 @@
+#! /usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+CONFIG_FILE="${CONFIG_FILE:-${SCRIPT_DIR}/panel-migrator.json}"
+
+die() {
+  printf 'Error: %s\n' "$*" >&2
+  exit 1
+}
+
+require_tools() {
+  local missing=0
+
+  for tool in jq rsync awk df; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      printf 'Missing required command: %s\n' "$tool" >&2
+      missing=1
+    fi
+  done
+
+  [[ "$missing" -eq 0 ]] || exit 1
+}
+
+require_config() {
+  [[ -f "$CONFIG_FILE" ]] || die "config file missing: $CONFIG_FILE"
+}
+
+config_value() {
+  local jq_expr="$1"
+  jq -r "$jq_expr" "$CONFIG_FILE"
+}
+
+ptero_bin() {
+  local bin
+  bin="$(config_value '.ptero_bin // "./ptero"')"
+
+  if [[ "$bin" == /* ]]; then
+    printf '%s\n' "$bin"
+  else
+    printf '%s\n' "${SCRIPT_DIR}/${bin}"
+  fi
+}
+
+panel_volume_root() {
+  config_value '.panel_volume_root // "/docker/data/panel.nerd.nu/volumes"'
+}
+
+panel_owner() {
+  config_value '.panel_owner // "pterodactyl:pterodactyl"'
+}
+
+disk_safety_percent() {
+  if [[ -n "${MIGRATOR_DISK_SAFETY_PERCENT:-}" ]]; then
+    printf '%s\n' "$MIGRATOR_DISK_SAFETY_PERCENT"
+  else
+    config_value '.disk_safety_percent // 110'
+  fi
+}
+
+format_bytes() {
+  local bytes="$1"
+
+  if [[ -z "$bytes" || "$bytes" == "unknown" ]]; then
+    printf 'unknown'
+    return 0
+  fi
+
+  awk -v b="$bytes" '
+    BEGIN {
+      split("B KiB MiB GiB TiB PiB", unit)
+      i = 1
+      while (b >= 1024 && i < 6) {
+        b = b / 1024
+        i++
+      }
+      if (i == 1) {
+        printf "%.0f %s", b, unit[i]
+      } else {
+        printf "%.2f %s", b, unit[i]
+      }
+    }
+  '
+}
+
+disk_available_bytes() {
+  local path="$1"
+
+  df -PB1 "$path" | awk 'NR == 2 { gsub(/[^0-9]/, "", $4); print $4 }'
+}
+
+server_exists() {
+  local id="$1"
+  jq -e --arg id "$id" '.servers[] | select(.id == $id)' "$CONFIG_FILE" >/dev/null
+}
+
+server_field() {
+  local id="$1"
+  local field="$2"
+  local default="${3:-}"
+
+  jq -r --arg id "$id" --arg field "$field" --arg default "$default" '
+    (.servers[] | select(.id == $id) | .[$field]) // $default
+  ' "$CONFIG_FILE"
+}
+
+server_required_field() {
+  local id="$1"
+  local field="$2"
+  local value
+
+  value="$(server_field "$id" "$field" "")"
+  [[ -n "$value" && "$value" != "null" ]] || die "server $id is missing required field: $field"
+
+  printf '%s\n' "$value"
+}
+
+update_panel_uuid() {
+  local id="$1"
+  local uuid="$2"
+  local tmp
+
+  server_exists "$id" || die "unknown server identifier: $id"
+
+  tmp="$(mktemp)"
+
+  jq --arg id "$id" --arg uuid "$uuid" '
+    (.servers[] | select(.id == $id) | .panel_uuid) = $uuid
+  ' "$CONFIG_FILE" > "$tmp"
+
+  mv "$tmp" "$CONFIG_FILE"
+}
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  ./panel-migrator list
+  ./panel-migrator adopt <identifier> <panel-server-uuid>
+  ./panel-migrator create <identifier>
+  ./panel-migrator migrate <identifier>
+  ./panel-migrator <identifier>
+
+Environment:
+  CONFIG_FILE=./panel-migrator.json
+  MIGRATOR_DRY_RUN=1
+  MIGRATOR_DRY_RUN_SUDO=1
+  MIGRATOR_YES=1
+  MIGRATOR_REPLACE_TARGET=1
+  MIGRATOR_FORCE=1
+  MIGRATOR_DISK_SAFETY_PERCENT=110
+
+Config supports:
+  disk_safety_percent: 110
+  default_rsync_excludes: [ "plugins/WorldEdit/.archive-unpack/" ]
+  servers[].rsync_excludes: [ "some/path/" ]
+USAGE
+}
+
+list_servers() {
+  local root
+  root="$(panel_volume_root)"
+
+  printf '%-18s %-24s %-36s %-8s %-8s %-12s %-12s %s\n' \
+    "IDENTIFIER" "NAME" "PANEL_UUID" "ALLOC" "TYPE" "SOURCE" "TARGET" "PATH"
+
+  printf '%-18s %-24s %-36s %-8s %-8s %-12s %-12s %s\n' \
+    "----------" "----" "----------" "-----" "----" "------" "------" "----"
+
+  jq -r '
+    .servers[]
+    | [
+        .id,
+        .name,
+        (.panel_uuid // "-"),
+        (.allocation_id | tostring),
+        (.type // "paper"),
+        (.source // ""),
+        (.service // "-")
+      ]
+    | @tsv
+  ' "$CONFIG_FILE" |
+  while IFS=$'\t' read -r id name uuid allocation_id type source service; do
+    local source_status target_status target_path
+
+    if [[ -d "$source" ]]; then
+      source_status="ok"
+    else
+      source_status="missing"
+    fi
+
+    if [[ "$uuid" != "-" ]]; then
+      target_path="${root}/${uuid}"
+      if [[ -d "$target_path" ]]; then
+        target_status="ok"
+      else
+        target_status="missing"
+      fi
+    else
+      target_path="-"
+      target_status="none"
+    fi
+
+    printf '%-18s %-24s %-36s %-8s %-8s %-12s %-12s %s\n' \
+      "$id" "$name" "$uuid" "$allocation_id" "$type" "$source_status" "$target_status" "$source"
+  done
+}
+
+allocation_port() {
+  local allocation_id="$1"
+  local bin
+  local allocations
+
+  bin="$(ptero_bin)"
+  [[ -x "$bin" ]] || die "ptero dispatcher missing or not executable: $bin"
+
+  allocations="$("$bin" allocations)"
+
+  awk -v wanted="$allocation_id" '
+    $1 == wanted {
+      found = $4
+    }
+    END {
+      if (found != "") {
+        print found
+      }
+    }
+  ' <<<"$allocations"
+}
+
+load_rsync_excludes() {
+  local id="$1"
+
+  jq -r --arg id "$id" '
+    (
+      (.default_rsync_excludes // ["plugins/WorldEdit/.archive-unpack/"])
+      +
+      ((.servers[] | select(.id == $id) | .rsync_excludes) // [])
+    )[]
+  ' "$CONFIG_FILE"
+}
+
+estimate_transfer_bytes() {
+  local use_sudo="$1"
+  local source="$2"
+  local target_dir="$3"
+  local output
+
+  if [[ "$use_sudo" == "1" ]]; then
+    output="$(
+      sudo rsync "${rsync_common_args[@]}" --dry-run --stats --bytes \
+        "${source%/}/" \
+        "${target_dir%/}/" 2>&1
+    )" || {
+      printf '%s\n' "$output" >&2
+      return 1
+    }
+  else
+    output="$(
+      rsync "${rsync_common_args[@]}" --dry-run --stats --bytes \
+        "${source%/}/" \
+        "${target_dir%/}/" 2>&1
+    )" || {
+      return 1
+    }
+  fi
+
+  awk -F ':' '
+    /^Total transferred file size:/ {
+      value = $2
+      gsub(/[^0-9]/, "", value)
+      print value
+      found = 1
+    }
+    END {
+      if (!found) {
+        exit 1
+      }
+    }
+  ' <<<"$output"
+}
+
+confirm_dry_run() {
+  local answer
+
+  if [[ "${MIGRATOR_YES:-0}" == "1" ]]; then
+    return 0
+  fi
+
+  printf 'Run dry-run preview? No files will be changed. [Y/n]: '
+  read -r answer
+
+  case "${answer,,}" in
+    ""|y|yes)
+      return 0
+      ;;
+    n|no)
+      return 1
+      ;;
+    *)
+      printf 'Please answer y or n.\n' >&2
+      return 1
+      ;;
+  esac
+}
+
+confirm_real_migration() {
+  local answer
+
+  if [[ "${MIGRATOR_YES:-0}" == "1" ]]; then
+    return 0
+  fi
+
+  printf 'Perform real migration? This will copy files and modify the target volume. [type MIGRATE to continue]: '
+  read -r answer
+
+  [[ "$answer" == "MIGRATE" ]]
+}
+
+adopt_server() {
+  local id="$1"
+  local uuid="$2"
+  local root target
+
+  server_exists "$id" || die "unknown server identifier: $id"
+
+  root="$(panel_volume_root)"
+  target="${root}/${uuid}"
+
+  if [[ ! -d "$target" ]]; then
+    printf 'Warning: target volume does not exist yet: %s\n' "$target" >&2
+  fi
+
+  update_panel_uuid "$id" "$uuid"
+  printf 'Adopted %s -> %s\n' "$id" "$uuid"
+}
+
+create_destination() {
+  local id="$1"
+  local bin name allocation_id type existing_uuid created_json uuid
+
+  server_exists "$id" || die "unknown server identifier: $id"
+
+  existing_uuid="$(server_field "$id" "panel_uuid" "")"
+  if [[ -n "$existing_uuid" && "$existing_uuid" != "null" ]]; then
+    printf '%s\n' "$existing_uuid"
+    return 0
+  fi
+
+  bin="$(ptero_bin)"
+  [[ -x "$bin" ]] || die "ptero dispatcher missing or not executable: $bin"
+
+  name="$(server_required_field "$id" "name")"
+  allocation_id="$(server_required_field "$id" "allocation_id")"
+  type="$(server_field "$id" "type" "paper")"
+
+  if [[ "${MIGRATOR_DRY_RUN:-0}" == "1" ]]; then
+    printf 'Dry run: would create Panel server: %s / %s / allocation %s / type %s\n' \
+      "$id" "$name" "$allocation_id" "$type" >&2
+    PTERO_DRY_RUN=1 "$bin" create "$id" "$name" "$allocation_id" "$type" >&2
+    printf 'DRY_RUN_NO_UUID\n'
+    return 0
+  fi
+
+  created_json="$("$bin" create "$id" "$name" "$allocation_id" "$type")"
+  printf '%s\n' "$created_json" >&2
+
+  uuid="$(printf '%s\n' "$created_json" | jq -r '.uuid // empty')"
+  [[ -n "$uuid" ]] || die "Panel create did not return a UUID"
+
+  update_panel_uuid "$id" "$uuid"
+  printf '%s\n' "$uuid"
+}
+
+set_property() {
+  local file="$1"
+  local key="$2"
+  local value="$3"
+
+  if sudo grep -q "^${key}=" "$file"; then
+    sudo sed -i "s#^${key}=.*#${key}=${value}#" "$file"
+  else
+    printf '%s=%s\n' "$key" "$value" | sudo tee -a "$file" >/dev/null
+  fi
+}
+
+stop_old_service_if_configured() {
+  local service="$1"
+
+  [[ -n "$service" && "$service" != "null" && "$service" != "-" ]] || return 0
+
+  if systemctl list-unit-files "$service" >/dev/null 2>&1; then
+    printf 'Stopping old service: %s\n' "$service"
+
+    if [[ "${MIGRATOR_DRY_RUN:-0}" == "1" ]]; then
+      printf 'Dry run: sudo systemctl stop %s\n' "$service"
+    else
+      sudo systemctl stop "$service"
+    fi
+  else
+    printf 'Configured service not found, continuing: %s\n' "$service"
+  fi
+}
+
+migration_marker_path() {
+  local target_dir="$1"
+  printf '%s/.panel-migration.json\n' "$target_dir"
+}
+
+target_entry_count() {
+  local target_dir="$1"
+
+  if [[ -r "$target_dir" && -x "$target_dir" ]]; then
+    find "$target_dir" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l | awk '{print $1}'
+  else
+    printf 'unknown\n'
+  fi
+}
+
+check_marker_policy() {
+  local target_dir="$1"
+  local marker
+
+  marker="$(migration_marker_path "$target_dir")"
+
+  if [[ -f "$marker" && "${MIGRATOR_FORCE:-0}" != "1" ]]; then
+    printf 'Refusing to migrate: target already has a migration marker:\n' >&2
+    printf '  %s\n\n' "$marker" >&2
+    sudo cat "$marker" >&2 || true
+    printf '\nSet MIGRATOR_FORCE=1 only if you intentionally want to re-copy from the old source.\n' >&2
+    exit 1
+  fi
+}
+
+check_nonempty_policy() {
+  local target_dir="$1"
+  local target_count="$2"
+
+  if [[ "$target_count" == "unknown" ]]; then
+    printf 'Warning: could not determine whether target directory is empty without sudo.\n' >&2
+    return 0
+  fi
+
+  if [[ "$target_count" -eq 0 ]]; then
+    return 0
+  fi
+
+  if [[ "${MIGRATOR_REPLACE_TARGET:-0}" == "1" ]]; then
+    return 0
+  fi
+
+  if [[ "${MIGRATOR_DRY_RUN:-0}" == "1" ]]; then
+    printf 'Dry-run warning: target directory is non-empty. Real migration would require MIGRATOR_REPLACE_TARGET=1.\n' >&2
+    return 0
+  fi
+
+  printf 'Refusing to migrate: target directory is non-empty:\n' >&2
+  printf '  %s\n\n' "$target_dir" >&2
+  printf 'This may be disposable bootstrap data, or it may be played-on data.\n' >&2
+  printf 'Use MIGRATOR_REPLACE_TARGET=1 to move existing target contents aside before migration.\n' >&2
+  exit 1
+}
+
+prepare_target_for_migration() {
+  local target_dir="$1"
+  local target_count="$2"
+  local backup_dir
+
+  if [[ "$target_count" == "unknown" ]]; then
+    target_count="$(sudo find "$target_dir" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l | awk '{print $1}')"
+  fi
+
+  if [[ "$target_count" -eq 0 ]]; then
+    return 0
+  fi
+
+  [[ "${MIGRATOR_REPLACE_TARGET:-0}" == "1" ]] || die "target is non-empty and MIGRATOR_REPLACE_TARGET is not set"
+
+  backup_dir="${target_dir}.pre-migration.$(date +%Y%m%d-%H%M%S)"
+
+  printf 'Target is non-empty. Moving existing target contents aside:\n'
+  printf '  from: %s\n' "$target_dir"
+  printf '  to:   %s\n' "$backup_dir"
+
+  sudo mkdir -p "$backup_dir"
+  sudo find "$target_dir" -mindepth 1 -maxdepth 1 -exec mv -t "$backup_dir" {} +
+}
+
+check_target_container_stopped() {
+  local uuid="$1"
+  local running_names
+
+  if ! command -v docker >/dev/null 2>&1; then
+    printf 'Warning: docker command not found; skipping running-container check.\n' >&2
+    return 0
+  fi
+
+  running_names="$(sudo docker ps --format '{{.Names}}')"
+
+  if grep -Fxq "$uuid" <<<"$running_names"; then
+    printf 'Refusing to migrate: Panel container is currently running: %s\n' "$uuid" >&2
+    exit 1
+  fi
+}
+
+write_migration_marker() {
+  local target_dir="$1"
+  local id="$2"
+  local name="$3"
+  local source="$4"
+  local uuid="$5"
+  local allocation_id="$6"
+  local port="$7"
+  local type="$8"
+  local marker
+
+  marker="$(migration_marker_path "$target_dir")"
+
+  jq -n \
+    --arg migrated_at "$(date -Is)" \
+    --arg id "$id" \
+    --arg name "$name" \
+    --arg source "$source" \
+    --arg uuid "$uuid" \
+    --arg allocation_id "$allocation_id" \
+    --arg port "$port" \
+    --arg type "$type" \
+    '{
+      migrated_at: $migrated_at,
+      id: $id,
+      name: $name,
+      source: $source,
+      panel_uuid: $uuid,
+      allocation_id: ($allocation_id | tonumber),
+      port: ($port | tonumber),
+      type: $type
+    }' \
+    | sudo tee "$marker" >/dev/null
+}
+
+migrate_server() {
+  local id="$1"
+  local root owner name source allocation_id type service uuid target_dir port target_count
+  local marker_status target_policy exclude_summary
+  local disk_safety available_bytes required_bytes required_with_margin
+  local disk_required_human disk_required_margin_human disk_available_human disk_policy
+  local estimate_use_sudo
+  local -a rsync_excludes
+  local -a rsync_common_args
+
+  server_exists "$id" || die "unknown server identifier: $id"
+
+  root="$(panel_volume_root)"
+  owner="$(panel_owner)"
+
+  name="$(server_required_field "$id" "name")"
+  source="$(server_required_field "$id" "source")"
+  allocation_id="$(server_required_field "$id" "allocation_id")"
+  type="$(server_field "$id" "type" "paper")"
+  service="$(server_field "$id" "service" "")"
+
+  [[ -d "$source" ]] || die "source directory does not exist: $source"
+
+  uuid="$(server_field "$id" "panel_uuid" "")"
+  if [[ -z "$uuid" || "$uuid" == "null" ]]; then
+    printf 'No panel_uuid configured for %s. Creating destination.\n' "$id"
+    uuid="$(create_destination "$id")"
+  fi
+
+  if [[ "$uuid" == "DRY_RUN_NO_UUID" ]]; then
+    printf 'Dry run stopped before file migration because no real destination UUID exists.\n'
+    return 0
+  fi
+
+  target_dir="${root}/${uuid}"
+  [[ -d "$target_dir" ]] || die "target volume does not exist: $target_dir"
+
+  check_marker_policy "$target_dir"
+
+  port="$(allocation_port "$allocation_id")"
+  [[ -n "$port" ]] || die "could not determine port for allocation ID $allocation_id"
+
+  target_count="$(target_entry_count "$target_dir")"
+
+  mapfile -t rsync_excludes < <(load_rsync_excludes "$id")
+
+  rsync_common_args=(-aHAX --numeric-ids)
+  for exclude in "${rsync_excludes[@]}"; do
+    [[ -n "$exclude" ]] && rsync_common_args+=("--exclude=${exclude}")
+  done
+
+  disk_safety="$(disk_safety_percent)"
+  [[ "$disk_safety" =~ ^[0-9]+$ ]] || die "disk safety percent must be an integer, got: $disk_safety"
+
+  available_bytes="$(disk_available_bytes "$target_dir")"
+  [[ -n "$available_bytes" ]] || die "could not determine available disk space for $target_dir"
+
+  if [[ "${MIGRATOR_DRY_RUN:-0}" == "1" && "${MIGRATOR_DRY_RUN_SUDO:-0}" != "1" ]]; then
+    estimate_use_sudo=0
+  else
+    estimate_use_sudo=1
+  fi
+
+  if required_bytes="$(estimate_transfer_bytes "$estimate_use_sudo" "$source" "$target_dir")"; then
+    required_with_margin=$(( (required_bytes * disk_safety + 99) / 100 ))
+
+    disk_required_human="$(format_bytes "$required_bytes")"
+    disk_required_margin_human="$(format_bytes "$required_with_margin")"
+    disk_available_human="$(format_bytes "$available_bytes")"
+
+    if [[ "$available_bytes" -ge "$required_with_margin" ]]; then
+      disk_policy="ok"
+    else
+      disk_policy="insufficient"
+    fi
+  else
+    required_bytes="unknown"
+    required_with_margin="unknown"
+    disk_required_human="unknown"
+    disk_required_margin_human="unknown"
+    disk_available_human="$(format_bytes "$available_bytes")"
+
+    if [[ "${MIGRATOR_DRY_RUN:-0}" == "1" ]]; then
+      disk_policy="unknown; rerun with MIGRATOR_DRY_RUN_SUDO=1 for privileged estimate"
+    else
+      die "could not estimate migration size"
+    fi
+  fi
+
+  if [[ -f "$(migration_marker_path "$target_dir")" ]]; then
+    marker_status="present"
+  else
+    marker_status="absent"
+  fi
+
+  if [[ "$target_count" == "unknown" ]]; then
+    target_policy="unknown; may require sudo during real migration"
+  elif [[ "$target_count" -eq 0 ]]; then
+    target_policy="empty; safe to seed"
+  elif [[ "${MIGRATOR_REPLACE_TARGET:-0}" == "1" ]]; then
+    target_policy="non-empty; existing contents will be moved aside"
+  else
+    target_policy="non-empty; real migration refused unless MIGRATOR_REPLACE_TARGET=1"
+  fi
+
+  if [[ "${#rsync_excludes[@]}" -gt 0 ]]; then
+    exclude_summary="${rsync_excludes[*]}"
+  else
+    exclude_summary="none"
+  fi
+
+  cat <<PLAN
+Migration plan:
+
+  Identifier:       $id
+  Name:             $name
+  Type:             $type
+  Source:           $source
+  Target UUID:      $uuid
+  Target path:      $target_dir
+  Allocation ID:    $allocation_id
+  Allocation port:  $port
+  Old service:      ${service:-none}
+  Target entries:   $target_count
+  Marker:           $marker_status
+  Target policy:    $target_policy
+  Rsync excludes:   $exclude_summary
+
+  Disk required:    $disk_required_human
+  Disk margin:      ${disk_safety}% -> $disk_required_margin_human
+  Disk available:   $disk_available_human
+  Disk policy:      $disk_policy
+
+  Owner after copy: $owner
+
+PLAN
+
+  if [[ "$disk_policy" == "insufficient" ]]; then
+    if [[ "${MIGRATOR_DRY_RUN:-0}" == "1" ]]; then
+      printf 'Dry-run warning: target filesystem does not appear to have enough free space for this migration.\n' >&2
+    else
+      die "insufficient disk space for migration"
+    fi
+  fi
+
+  check_nonempty_policy "$target_dir" "$target_count"
+
+  if [[ "${MIGRATOR_DRY_RUN:-0}" == "1" ]]; then
+    confirm_dry_run || die "aborted"
+  else
+    confirm_real_migration || die "aborted"
+  fi
+
+  stop_old_service_if_configured "$service"
+
+  if [[ "${MIGRATOR_DRY_RUN:-0}" == "1" ]]; then
+    printf 'Dry run: scanning source and target with rsync --dry-run. No destination files will be changed.\n'
+
+    if rsync "${rsync_common_args[@]}" --dry-run --stats --human-readable \
+      "${source%/}/" \
+      "${target_dir%/}/"; then
+      :
+    else
+      cat >&2 <<'MSG'
+
+Dry-run rsync failed without sudo.
+
+This usually means your user cannot read all source files or cannot traverse the target directory.
+No files were changed.
+
+If you want a privileged dry-run, run:
+  MIGRATOR_DRY_RUN=1 MIGRATOR_DRY_RUN_SUDO=1 ./panel-migrator <identifier>
+
+MSG
+
+      if [[ "${MIGRATOR_DRY_RUN_SUDO:-0}" == "1" ]]; then
+        sudo rsync "${rsync_common_args[@]}" --dry-run --stats --human-readable \
+          "${source%/}/" \
+          "${target_dir%/}/"
+      else
+        exit 1
+      fi
+    fi
+
+    printf 'Dry run: would update server.properties, write migration marker, and chown target.\n'
+    return 0
+  fi
+
+  check_target_container_stopped "$uuid"
+  prepare_target_for_migration "$target_dir" "$target_count"
+
+  printf 'Copying files...\n'
+  sudo rsync "${rsync_common_args[@]}" --info=progress2 \
+    "${source%/}/" \
+    "${target_dir%/}/"
+
+  if [[ -f "${target_dir}/server.properties" ]]; then
+    printf 'Updating server.properties...\n'
+    set_property "${target_dir}/server.properties" "online-mode" "false"
+    set_property "${target_dir}/server.properties" "server-ip" "0.0.0.0"
+    set_property "${target_dir}/server.properties" "server-port" "$port"
+  else
+    printf 'Warning: no server.properties found in target.\n' >&2
+  fi
+
+  printf 'Writing migration marker...\n'
+  write_migration_marker "$target_dir" "$id" "$name" "$source" "$uuid" "$allocation_id" "$port" "$type"
+
+  printf 'Fixing ownership...\n'
+  sudo chown -R "$owner" "$target_dir"
+
+  cat <<DONE
+
+Migration complete.
+
+Next:
+  1. Start "$name" from Panel.
+  2. Check the backend console.
+  3. Confirm Velocity forwarding config and secret.
+  4. Point Velocity at this backend container IP and port $port.
+DONE
+}
+
+main() {
+  require_tools
+  require_config
+
+  if [[ $# -lt 1 ]]; then
+    usage >&2
+    exit 1
+  fi
+
+  case "$1" in
+    list)
+      [[ $# -eq 1 ]] || die "usage: ./panel-migrator list"
+      list_servers
+      ;;
+
+    adopt)
+      [[ $# -eq 3 ]] || die "usage: ./panel-migrator adopt <identifier> <panel-server-uuid>"
+      adopt_server "$2" "$3"
+      ;;
+
+    create)
+      [[ $# -eq 2 ]] || die "usage: ./panel-migrator create <identifier>"
+      create_destination "$2" >/dev/null
+      ;;
+
+    migrate)
+      [[ $# -eq 2 ]] || die "usage: ./panel-migrator migrate <identifier>"
+      migrate_server "$2"
+      ;;
+
+    help|-h|--help)
+      usage
+      ;;
+
+    *)
+      [[ $# -eq 1 ]] || die "usage: ./panel-migrator <identifier>"
+      migrate_server "$1"
+      ;;
+  esac
+}
+
+main "$@"
+
+

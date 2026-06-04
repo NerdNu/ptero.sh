@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  ./ptero <command> [args...]
+
+Read-only:
+  ./ptero ping
+  ./ptero users
+  ./ptero allocations
+  ./ptero servers
+  ./ptero egg [egg-id]
+
+Write:
+  ./ptero create <external-id> <display-name> <allocation-id> [server-type]
+  ./ptero create-paper <external-id> <display-name> <allocation-id>
+
+Examples:
+  ./ptero ping
+  ./ptero allocations
+  ./ptero servers
+  ./ptero egg 1
+  PTERO_DRY_RUN=1 ./ptero create lobby-dev "Lobby Dev" 2
+  PTERO_DRY_RUN=1 ./ptero create lobby-dev "Lobby Dev" 2 paper
+  ./ptero create modded-dev "Modded Dev" 7 fabric
+  ./ptero create proxy-dev "Proxy Dev" 53 velocity
+USAGE
+}
+
+run_script() {
+  local script="$1"
+  shift
+
+  if [[ ! -x "${SCRIPT_DIR}/${script}" ]]; then
+    printf 'Missing or non-executable script: %s\n' "${SCRIPT_DIR}/${script}" >&2
+    exit 1
+  fi
+
+  exec "${SCRIPT_DIR}/${script}" "$@"
+}
+
+if [[ $# -lt 1 ]]; then
+  usage >&2
+  exit 1
+fi
+
+command="$1"
+shift
+
+case "$command" in
+  ping)
+    run_script ptero-ping "$@"
+    ;;
+
+  users|users-list)
+    run_script ptero-users-list "$@"
+    ;;
+
+  allocations|allocations-list)
+    run_script ptero-allocations-list "$@"
+    ;;
+
+  servers|servers-list)
+    run_script ptero-servers-list "$@"
+    ;;
+
+  egg|egg-show)
+    run_script ptero-egg-show "$@"
+    ;;
+
+  create|server-create)
+    run_script ptero-server-create "$@"
+    ;;
+
+  create-paper|server-create-paper)
+    run_script ptero-server-create-paper "$@"
+    ;;
+
+  help|-h|--help)
+    usage
+    ;;
+
+  *)
+    printf 'Unknown command: %s\n\n' "$command" >&2
+    usage >&2
+    exit 1
+    ;;
+esac

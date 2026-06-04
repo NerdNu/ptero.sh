@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+source "${SCRIPT_DIR}/ptero-common.sh"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  ./ptero-server-create-paper <external-id> <display-name> <allocation-id>
+
+Example:
+  ./ptero-server-create-paper lobby-dev "Lobby Dev" 2
+
+Set PTERO_DRY_RUN=1 to print the payload without creating the server.
+USAGE
+}
+
+if [[ $# -ne 3 ]]; then
+  usage >&2
+  exit 1
+fi
+
+external_id="$1"
+display_name="$2"
+allocation_id="$3"
+
+ptero_require_env \
+  PTERO_OWNER_ID \
+  PTERO_PAPER_EGG_ID \
+  PTERO_DOCKER_IMAGE \
+  PTERO_MEMORY_MIB \
+  PTERO_DISK_MIB \
+  PTERO_CPU_PERCENT \
+  PTERO_BACKUPS \
+  PTERO_DATABASES \
+  PTERO_EXTRA_ALLOCATIONS \
+  PTERO_MINECRAFT_VERSION \
+  PTERO_SERVER_JARFILE \
+  PTERO_BUILD_NUMBER \
+  PTERO_STARTUP
+
+payload="$(
+  jq -n \
+    --arg external_id "$external_id" \
+    --arg name "$display_name" \
+    --argjson user "$PTERO_OWNER_ID" \
+    --argjson egg "$PTERO_PAPER_EGG_ID" \
+    --arg docker_image "$PTERO_DOCKER_IMAGE" \
+    --arg startup "$PTERO_STARTUP" \
+    --arg minecraft_version "$PTERO_MINECRAFT_VERSION" \
+    --arg server_jarfile "$PTERO_SERVER_JARFILE" \
+    --arg dl_path "${PTERO_DL_PATH:-}" \
+    --arg build_number "$PTERO_BUILD_NUMBER" \
+    --argjson memory "$PTERO_MEMORY_MIB" \
+    --argjson disk "$PTERO_DISK_MIB" \
+    --argjson cpu "$PTERO_CPU_PERCENT" \
+    --argjson backups "$PTERO_BACKUPS" \
+    --argjson databases "$PTERO_DATABASES" \
+    --argjson extra_allocations "$PTERO_EXTRA_ALLOCATIONS" \
+    --argjson allocation "$allocation_id" \
+    '{
+      external_id: $external_id,
+      name: $name,
+      user: $user,
+      egg: $egg,
+      docker_image: $docker_image,
+      startup: $startup,
+      environment: {
+        MINECRAFT_VERSION: $minecraft_version,
+        SERVER_JARFILE: $server_jarfile,
+        DL_PATH: $dl_path,
+        BUILD_NUMBER: $build_number
+      },
+      limits: {
+        memory: $memory,
+        swap: 0,
+        disk: $disk,
+        io: 500,
+        cpu: $cpu
+      },
+      feature_limits: {
+        databases: $databases,
+        allocations: $extra_allocations,
+        backups: $backups
+      },
+      allocation: {
+        default: $allocation
+      },
+      start_on_completion: false,
+      skip_scripts: true
+    }'
+)"
+
+if [[ "${PTERO_DRY_RUN:-0}" == "1" ]]; then
+  printf '%s\n' "$payload" | jq .
+  exit 0
+fi
+
+ptero_api POST "/api/application/servers" "$payload" \
+  | jq '{
+      panel_id: .attributes.id,
+      uuid: .attributes.uuid,
+      identifier: .attributes.identifier,
+      external_id: .attributes.external_id,
+      name: .attributes.name
+    }'

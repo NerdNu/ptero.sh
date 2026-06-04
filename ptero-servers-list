@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+source "${SCRIPT_DIR}/ptero-common.sh"
+
+VOLUMES_DIR="${PTERO_VOLUMES_DIR:-/docker/data/panel.nerd.nu/volumes}"
+
+page=1
+volume_rows=()
+
+printf '%-6s %-24s %-30s %s\n' \
+  "ID" "EXTERNAL_ID" "NAME" "ALLOCATIONS"
+printf '%-6s %-24s %-30s %s\n' \
+  "--" "-----------" "----" "-----------"
+
+while :; do
+  response="$(ptero_api GET "/api/application/servers?include=allocations&per_page=100&page=${page}")"
+
+  mapfile -t rows < <(
+    printf '%s\n' "$response" \
+      | jq -r --arg volumes_dir "$VOLUMES_DIR" '
+          .data[]
+          | .attributes as $s
+          | (
+              [
+                (
+                  $s.relationships.allocations.data // []
+                  | .[]
+                  | .attributes
+                  | "\(.ip):\(.port)"
+                )
+              ]
+              | join(",")
+            ) as $allocs
+          | [
+              $s.id,
+              "\($volumes_dir)/\($s.uuid)",
+              ($s.external_id // "-"),
+              $s.name,
+              (($allocs | select(length > 0)) // "-")
+            ]
+          | @tsv
+        '
+  )
+
+  for row in "${rows[@]}"; do
+    IFS=$'\t' read -r id volume_path external_id name allocations <<< "$row"
+
+    printf '%-6s %-24s %-30s %s\n' \
+      "$id" "$external_id" "$name" "$allocations"
+
+    volume_rows+=("${id}"$'\t'"${name}"$'\t'"${volume_path}")
+  done
+
+  total_pages="$(printf '%s\n' "$response" | jq -r '.meta.pagination.total_pages // 1')"
+
+  if [[ "$page" -ge "$total_pages" ]]; then
+    break
+  fi
+
+  page=$((page + 1))
+done
+
+printf '\n%s\n' "Volume paths:"
+
+for row in "${volume_rows[@]}"; do
+  IFS=$'\t' read -r id name volume_path <<< "$row"
+
+  printf '\n# %s %s\n' "$id" "$name"
+  printf '%s\n' "$volume_path"
+done
+

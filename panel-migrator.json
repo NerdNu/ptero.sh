@@ -1,0 +1,16 @@
+{
+  "ptero_bin": "./ptero",
+  "panel_volume_root": "/docker/data/panel.nerd.nu/volumes",
+  "panel_owner": "pterodactyl:pterodactyl",
+  "servers": [
+    {
+      "id": "lobby-dev",
+      "name": "Lobby Dev",
+      "source": "/servers/lobby-dev",
+      "allocation_id": 2,
+      "type": "paper",
+      "service": null,
+      "panel_uuid": "001ee416-999e-4640-a287-f9f6a1fbe8c1"
+    }
+  ]
+}

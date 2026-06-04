@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+source "${SCRIPT_DIR}/ptero-common.sh"
+
+egg_id="${1:-${PTERO_PAPER_EGG_ID:-}}"
+
+if [[ -z "$egg_id" ]]; then
+  printf 'Usage: ./ptero-egg-show <egg-id>\n' >&2
+  printf 'Or set PTERO_PAPER_EGG_ID in ptero.env.\n' >&2
+  exit 1
+fi
+
+nests="$(ptero_api GET "/api/application/nests?include=eggs&per_page=100")"
+
+nest_id="$(
+  printf '%s\n' "$nests" \
+    | jq -r --argjson egg_id "$egg_id" '
+        .data[]
+        | select(
+            [
+              .attributes.relationships.eggs.data[].attributes.id
+            ]
+            | index($egg_id)
+          )
+        | .attributes.id
+      ' \
+    | head -1
+)"
+
+if [[ -z "$nest_id" || "$nest_id" == "null" ]]; then
+  printf 'Could not find nest containing egg ID %s\n' "$egg_id" >&2
+  exit 1
+fi
+
+ptero_api GET "/api/application/nests/${nest_id}/eggs/${egg_id}?include=variables" \
+  | jq '{
+      nest_id: '"$nest_id"',
+      egg_id: .attributes.id,
+      name: .attributes.name,
+      docker_image: .attributes.docker_image,
+      startup: .attributes.startup,
+      variables: [
+        (.attributes.relationships.variables.data // [])[]
+        | {
+            name: .attributes.name,
+            env_variable: .attributes.env_variable,
+            default_value: .attributes.default_value,
+            rules: .attributes.rules,
+            user_viewable: .attributes.user_viewable,
+            user_editable: .attributes.user_editable
+          }
+      ]
+    }'

@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+source "${SCRIPT_DIR}/ptero-common.sh"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  ./ptero-server-create <external-id> <display-name> <allocation-id> [server-type]
+
+Examples:
+  ./ptero-server-create lobby-dev "Lobby Dev" 2
+  ./ptero-server-create lobby-dev "Lobby Dev" 2 paper
+
+Default server type comes from PTERO_DEFAULT_SERVER_TYPE.
+USAGE
+}
+
+if [[ $# -lt 3 || $# -gt 4 ]]; then
+  usage >&2
+  exit 1
+fi
+
+external_id="$1"
+display_name="$2"
+allocation_id="$3"
+server_type="${4:-${PTERO_DEFAULT_SERVER_TYPE:-paper}}"
+
+case "$server_type" in
+  paper)
+    exec "${SCRIPT_DIR}/ptero-server-create-paper" \
+      "$external_id" "$display_name" "$allocation_id"
+    ;;
+
+  *)
+    printf 'Unknown server type: %s\n' "$server_type" >&2
+    printf 'Known types: paper\n' >&2
+    exit 1
+    ;;
+esac
