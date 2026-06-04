@@ -361,11 +361,4 @@ systemctl cat <service-name>
 ## Repeat
 
 After one server is migrated and tested, repeat the process for the next world.
-EOF
-
-```
-
-This updates the plan to match the current tooling and changes the old "start once, then stop it" instruction to the safer "create but do not start before migration" flow. Confidence: 98/100.
-```
-
 
