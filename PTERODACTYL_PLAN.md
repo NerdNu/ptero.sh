@@ -1,6 +1,7 @@
 # Plan
 
-To migrate Minecraft servers from bare metal into Pterodactyl.
+To migrate Nerd.nu Minecraft servers from bare metal into Pterodactyl.
+
 
 ## Current policy
 
@@ -15,6 +16,7 @@ The migrator writes a marker file after a successful real migration:
 ```
 
 If that marker exists, a future migration refuses by default. This protects against accidentally overwriting a server that has already been migrated and possibly played on.
+
 
 ## Tooling
 
@@ -76,46 +78,15 @@ MIGRATOR_DRY_RUN=1 MIGRATOR_DRY_RUN_SUDO=1 ./panel-migrator lobby-dev
 ./panel-migrator lobby-dev
 ```
 
+
 ## Required config files
 
 ### ptero.env
 
 `ptero.env` contains Panel API defaults and the application API key.
 
-Check that `PTERO_APP_API_KEY` is not still the placeholder value:
-
-```sh
-grep PTERO_APP_API_KEY ptero.env
-```
-
-Expected shape:
-
-```sh
-export PTERO_URL="https://panel-vex.nerd.nu"
-export PTERO_APP_API_KEY="${PTERO_APP_API_KEY:-ptla_REPLACE_ME}"
-
-export PTERO_OWNER_ID="1"
-export PTERO_NODE_ID="1"
-export PTERO_DEFAULT_SERVER_TYPE="${PTERO_DEFAULT_SERVER_TYPE:-paper}"
-export PTERO_PAPER_EGG_ID="1"
-
-export PTERO_DOCKER_IMAGE="ghcr.io/pterodactyl/yolks:java_21"
-export PTERO_MEMORY_MIB="2048"
-export PTERO_DISK_MIB="0"
-export PTERO_CPU_PERCENT="0"
-export PTERO_BACKUPS="3"
-export PTERO_DATABASES="0"
-export PTERO_EXTRA_ALLOCATIONS="0"
-
-export PTERO_MINECRAFT_VERSION="latest"
-export PTERO_SERVER_JARFILE="server.jar"
-export PTERO_DL_PATH=""
-export PTERO_BUILD_NUMBER="latest"
-
-export PTERO_STARTUP='java -Xms128M -XX:MaxRAMPercentage=95.0 -Dterminal.jline=false -Dterminal.ansi=true -jar {{SERVER_JARFILE}}'
-```
-
 `PTERO_OWNER_ID` is the Panel user ID, not the Linux UID of the `pterodactyl` user.
+
 
 ### panel-migrator.json
 
@@ -146,6 +117,7 @@ Example:
 
 The default rsync exclude omits WorldEdit unpack cache data. It is not expected to be world state.
 
+
 ## Migration steps for one server
 
 ### 1. Choose the source server
@@ -159,6 +131,7 @@ ls -la /servers/lobby-dev
 du -sh /servers/lobby-dev
 ```
 
+
 ### 2. Pick an allocation
 
 List allocations:
@@ -168,6 +141,7 @@ List allocations:
 ```
 
 Choose an unassigned allocation. For `lobby-dev`, allocation ID `2` maps to port `27001`.
+
 
 ### 3. Add or update the server in panel-migrator.json
 
@@ -193,6 +167,7 @@ If the Panel server exists but the config does not know about it yet:
 ./panel-migrator adopt lobby-dev <panel-server-uuid>
 ```
 
+
 ### 4. Create the Panel destination
 
 Dry run first:
@@ -215,6 +190,7 @@ After creation, verify:
 ```
 
 Do not start the server yet.
+
 
 ### 5. Run a migration dry run
 
@@ -247,6 +223,7 @@ The default disk margin is 110%. To test another margin:
 ```sh
 MIGRATOR_DRY_RUN=1 MIGRATOR_DISK_SAFETY_PERCENT=125 ./panel-migrator lobby-dev
 ```
+
 
 ### 6. Run the real migration
 
@@ -285,6 +262,7 @@ MIGRATOR_FORCE=1 ./panel-migrator lobby-dev
 
 `MIGRATOR_FORCE=1` allows re-migration over a target that already has a migration marker. This can overwrite newer played-on data from the old source state, so use it carefully.
 
+
 ## Backend config after migration
 
 The migrator updates `server.properties`:
@@ -313,6 +291,7 @@ player-info-forwarding-mode = "modern"
 forwarding-secret-file = "forwarding.secret"
 ```
 
+
 ## Start and test
 
 Start the backend from Panel.
@@ -332,6 +311,7 @@ Then restart Velocity and test through:
 ```text
 vex.nerd.nu:25566
 ```
+
 
 ## Useful discovery commands
 
@@ -376,6 +356,7 @@ Inspect a service:
 ```sh
 systemctl cat <service-name>
 ```
+
 
 ## Repeat
 
