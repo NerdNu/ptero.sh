@@ -1,4 +1,4 @@
-# pterodactyl
+# ptero.sh
 
 Small shell helpers for working with a Pterodactyl panel and migrating Minecraft servers into it.
 
