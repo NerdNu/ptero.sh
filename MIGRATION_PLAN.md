@@ -54,6 +54,7 @@ Useful read-only commands:
 ./ptero users
 ./ptero allocations
 ./ptero servers
+./ptero backend lobby-dev
 ./ptero egg 1
 ```
 
@@ -277,6 +278,20 @@ server-ip=0.0.0.0
 server-port=<allocation-port>
 ```
 
+### Why?
+
+- server-port=<allocation port>
+  - On bare metal, the server may have been bound to a port chosen for the old host layout.
+  - In Panel, the server should listen on the allocation assigned to that container.
+  - So the migrator rewrites the port to match the selected Panel allocation.
+- server-ip=0.0.0.0
+  - On bare metal, server-ip may be blank or pinned to a host-specific address.
+  - Inside the Panel container, binding to 0.0.0.0 makes the server listen on the container interface in the normal Docker networking model.
+  - That is the safest generic containerized setting.
+- online-mode=false
+  - This is typical when a backend Paper server sits behind Velocity and relies on proxy forwarding rather than doing direct Mojang authentication itself.
+  - The doc already assumes a Velocity-backed setup and separately tells you to verify forwarding config and shared secret.
+
 For Paper behind Velocity, also confirm `config/paper-global.yml` has Velocity forwarding enabled and uses the same forwarding secret as Velocity:
 
 ```yaml
@@ -305,7 +320,7 @@ Check the backend console.
 Find the backend container IP if Velocity is still using container-internal routing:
 
 ```sh
-sudo docker inspect <backend-container-or-uuid> | jq -r '.[0].NetworkSettings.Networks | to_entries[] | "\(.key) \(.value.IPAddress)"'
+./ptero backend lobby-dev
 ```
 
 Update `velocity.toml` to point to the backend container IP and backend port.

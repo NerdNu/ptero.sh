@@ -1,0 +1,258 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+source "${SCRIPT_DIR}/ptero-common.sh"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  ./ptero-backend-show <server>
+
+Matches <server> against Panel server ID, external ID, UUID, short UUID, or exact name.
+
+Examples:
+  ./ptero-backend-show 10
+  ./ptero-backend-show lobby-dev
+  ./ptero-backend-show "Lobby Dev"
+USAGE
+}
+
+require_tools() {
+  local missing=0
+
+  for tool in jq; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      printf 'Missing required command: %s\n' "$tool" >&2
+      missing=1
+    fi
+  done
+
+  [[ "$missing" -eq 0 ]] || exit 1
+}
+
+docker_inspect_json() {
+  local container="$1"
+  local output
+
+  if command -v docker >/dev/null 2>&1; then
+    if output="$(docker inspect "$container" 2>/dev/null)"; then
+      printf '%s\n' "$output"
+      return 0
+    fi
+  fi
+
+  if command -v sudo >/dev/null 2>&1; then
+    if output="$(sudo -n docker inspect "$container" 2>/dev/null)"; then
+      printf '%s\n' "$output"
+      return 0
+    fi
+
+    printf 'Docker inspect requires sudo access; requesting it now.\n' >&2
+    if output="$(sudo docker inspect "$container" 2>/dev/null)"; then
+      printf '%s\n' "$output"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+velocity_hint_from_networks() {
+  local server_key="$1"
+  local networks_json="$2"
+  local hint_line
+
+  hint_line="$(
+    printf '%s\n' "$networks_json" \
+      | jq -r --arg server_key "$server_key" '
+          to_entries
+          | map(select(.value.ip_address != null and .value.ip_address != ""))
+          | .[0]?
+          | if . == null then
+              empty
+            else
+              "\($server_key) = \"\(.value.ip_address):\(.value.port)\""
+            end
+        '
+  )"
+
+  [[ -n "$hint_line" ]] && printf '%s\n' "$hint_line"
+}
+
+fetch_server_match() {
+  local query="$1"
+  local page=1
+  local response total_pages matched
+
+  while :; do
+    response="$(ptero_api GET "/api/application/servers?include=allocations&per_page=100&page=${page}")"
+
+    matched="$(
+      printf '%s\n' "$response" \
+        | jq -c --arg query "$query" '
+            .data[]
+            | .attributes as $s
+            | select(
+                ($s.id | tostring) == $query
+                or ($s.external_id // "") == $query
+                or $s.uuid == $query
+                or (($s.uuid | split("-"))[0]) == $query
+                or $s.name == $query
+              )
+            | {
+                id: $s.id,
+                external_id: ($s.external_id // "-"),
+                uuid: $s.uuid,
+                identifier: (($s.uuid | split("-"))[0]),
+                name: $s.name,
+                allocations: (
+                  $s.relationships.allocations.data // []
+                  | map({
+                      id: .attributes.id,
+                      ip: .attributes.ip,
+                      ip_alias: (.attributes.ip_alias // ""),
+                      port: .attributes.port,
+                      is_default: (.attributes.is_default // false)
+                    })
+                )
+              }
+          '
+    )"
+
+    if [[ -n "$matched" ]]; then
+      printf '%s\n' "$matched"
+      return 0
+    fi
+
+    total_pages="$(printf '%s\n' "$response" | jq -r '.meta.pagination.total_pages // 1')"
+    if [[ "$page" -ge "$total_pages" ]]; then
+      break
+    fi
+
+    page=$((page + 1))
+  done
+
+  return 1
+}
+
+if [[ $# -ne 1 ]]; then
+  usage >&2
+  exit 1
+fi
+
+require_tools
+server_query="$1"
+server_json="$(fetch_server_match "$server_query")" || {
+  printf 'No Panel server matched: %s\n' "$server_query" >&2
+  exit 1
+}
+
+uuid="$(printf '%s\n' "$server_json" | jq -r '.uuid')"
+name="$(printf '%s\n' "$server_json" | jq -r '.name')"
+external_id="$(printf '%s\n' "$server_json" | jq -r '.external_id')"
+server_id="$(printf '%s\n' "$server_json" | jq -r '.id')"
+identifier="$(printf '%s\n' "$server_json" | jq -r '.identifier')"
+
+default_allocation="$(
+  printf '%s\n' "$server_json" \
+    | jq -c '
+        (.allocations | map(select(.is_default == true)) | .[0])
+        // (.allocations[0])
+      '
+)"
+
+allocation_summary="$(
+  printf '%s\n' "$server_json" \
+    | jq -r '
+        .allocations
+        | map("\(.ip):\(.port)")
+        | join(", ")
+      '
+)"
+
+allocation_ip="$(printf '%s\n' "$default_allocation" | jq -r '.ip // empty')"
+allocation_port="$(printf '%s\n' "$default_allocation" | jq -r '.port // empty')"
+allocation_id="$(printf '%s\n' "$default_allocation" | jq -r '.id // empty')"
+
+server_key="$external_id"
+if [[ -z "$server_key" || "$server_key" == "-" ]]; then
+  server_key="$identifier"
+fi
+
+printf 'Panel server:\n'
+printf '  ID:            %s\n' "$server_id"
+printf '  External ID:   %s\n' "$external_id"
+printf '  Name:          %s\n' "$name"
+printf '  UUID:          %s\n' "$uuid"
+printf '  Identifier:    %s\n' "$identifier"
+printf '  Allocations:   %s\n' "$allocation_summary"
+
+if [[ -n "$allocation_id" && -n "$allocation_ip" && -n "$allocation_port" ]]; then
+  printf '  Default alloc: %s:%s (allocation %s)\n' "$allocation_ip" "$allocation_port" "$allocation_id"
+fi
+
+if inspect_json="$(docker_inspect_json "$uuid")"; then
+  container_name="$(printf '%s\n' "$inspect_json" | jq -r '.[0].Name // empty | ltrimstr("/")')"
+  container_state="$(printf '%s\n' "$inspect_json" | jq -r '.[0].State.Status // empty')"
+  container_running="$(printf '%s\n' "$inspect_json" | jq -r '.[0].State.Running // false')"
+  networks_json="$(
+    printf '%s\n' "$inspect_json" \
+      | jq -c --arg port "$allocation_port" '
+          (.[0].NetworkSettings.Networks // {})
+          | with_entries(
+              .value = {
+                ip_address: (.value.IPAddress // ""),
+                gateway: (.value.Gateway // ""),
+                aliases: ((.value.Aliases // []) | map(select(. != null))),
+                port: ($port | tonumber?)
+              }
+            )
+        '
+  )"
+
+  printf '\nDocker container:\n'
+  printf '  Name:          %s\n' "${container_name:-$uuid}"
+  printf '  Running:       %s\n' "$container_running"
+  printf '  State:         %s\n' "$container_state"
+
+  mapfile -t network_rows < <(
+    printf '%s\n' "$networks_json" \
+      | jq -r '
+          to_entries[]?
+          | [
+              .key,
+              (.value.ip_address // "-"),
+              (.value.gateway // "-"),
+              ((.value.aliases // []) | join(","))
+            ]
+          | @tsv
+        '
+  )
+
+  if [[ "${#network_rows[@]}" -gt 0 ]]; then
+    printf '  Networks:\n'
+    for row in "${network_rows[@]}"; do
+      IFS=$'\t' read -r network_name network_ip network_gateway network_aliases <<< "$row"
+      printf '    - %s\n' "$network_name"
+      printf '      IP:      %s\n' "$network_ip"
+      printf '      Gateway: %s\n' "$network_gateway"
+      printf '      Aliases: %s\n' "${network_aliases:-none}"
+    done
+  fi
+
+  velocity_hint="$(velocity_hint_from_networks "$server_key" "$networks_json")"
+  if [[ -n "$velocity_hint" ]]; then
+    printf '\nVelocity hint:\n'
+    printf '  %s\n' "$velocity_hint"
+  fi
+else
+  printf '\nDocker container:\n'
+  printf '  Could not inspect container named %s.\n' "$uuid"
+  printf '  This usually means Docker is unavailable here, sudo is required, or the container does not exist yet.\n'
+
+  if [[ -n "$allocation_ip" && -n "$allocation_port" ]]; then
+    printf '\nFallback hint:\n'
+    printf '  %s = "%s:%s"\n' "$server_key" "$allocation_ip" "$allocation_port"
+  fi
+fi
