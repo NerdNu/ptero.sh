@@ -7,7 +7,7 @@ source "${SCRIPT_DIR}/ptero-common.sh"
 usage() {
   cat <<'USAGE'
 Usage:
-  ./ptero-backend-show <server>
+  ./ptero-backend-show [--velocity-name <name>] <server>
 
 Matches <server> against Panel server ID, external ID, UUID, short UUID, or exact name.
 
@@ -15,6 +15,7 @@ Examples:
   ./ptero-backend-show 10
   ./ptero-backend-show lobby-dev
   ./ptero-backend-show "Lobby Dev"
+  ./ptero-backend-show --velocity-name lobby 10
 USAGE
 }
 
@@ -80,6 +81,50 @@ velocity_hint_from_networks() {
   [[ -n "$hint_line" ]] && printf '%s\n' "$hint_line"
 }
 
+parse_args() {
+  velocity_name=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --velocity-name)
+        [[ $# -ge 2 ]] || {
+          printf 'Missing value for --velocity-name\n' >&2
+          exit 1
+        }
+        velocity_name="$2"
+        shift 2
+        ;;
+
+      -h|--help)
+        usage
+        exit 0
+        ;;
+
+      --)
+        shift
+        break
+        ;;
+
+      -*)
+        printf 'Unknown option: %s\n' "$1" >&2
+        usage >&2
+        exit 1
+        ;;
+
+      *)
+        break
+        ;;
+    esac
+  done
+
+  [[ $# -eq 1 ]] || {
+    usage >&2
+    exit 1
+  }
+
+  server_query="$1"
+}
+
 fetch_server_match() {
   local query="$1"
   local page=1
@@ -136,13 +181,8 @@ fetch_server_match() {
   return 1
 }
 
-if [[ $# -ne 1 ]]; then
-  usage >&2
-  exit 1
-fi
-
 require_tools
-server_query="$1"
+parse_args "$@"
 server_json="$(fetch_server_match "$server_query")" || {
   printf 'No Panel server matched: %s\n' "$server_query" >&2
   exit 1
@@ -178,6 +218,10 @@ allocation_id="$(printf '%s\n' "$default_allocation" | jq -r '.id // empty')"
 server_key="$external_id"
 if [[ -z "$server_key" || "$server_key" == "-" ]]; then
   server_key="$identifier"
+fi
+
+if [[ -n "$velocity_name" ]]; then
+  server_key="$velocity_name"
 fi
 
 printf 'Panel server:\n'
@@ -241,10 +285,19 @@ if inspect_json="$(docker_inspect_json "$uuid")"; then
     done
   fi
 
+  if [[ "$container_running" != "true" ]]; then
+    printf '  Note:          container is not running, so Docker may not have assigned a backend IP yet.\n'
+  elif [[ -z "$(printf '%s\n' "$networks_json" | jq -r 'to_entries | map(.value.ip_address // "") | join("")')" ]]; then
+    printf '  Note:          container is running, but no network IP was reported by Docker inspect.\n'
+  fi
+
   velocity_hint="$(velocity_hint_from_networks "$server_key" "$networks_json")"
   if [[ -n "$velocity_hint" ]]; then
     printf '\nVelocity hint:\n'
     printf '  %s\n' "$velocity_hint"
+  else
+    printf '\nVelocity hint:\n'
+    printf '  No Docker-network IP is available yet for %s.\n' "$server_key"
   fi
 else
   printf '\nDocker container:\n'
