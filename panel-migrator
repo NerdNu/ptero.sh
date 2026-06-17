@@ -772,6 +772,10 @@ PLAN
   fi
 
   if [[ "${MIGRATOR_DRY_RUN:-0}" == "1" ]]; then
+    printf 'Dry run: performing read-only preflight checks and prompts.\n'
+    ensure_source_quiesced "$source"
+    check_target_container_stopped "$uuid"
+
     printf 'Dry run: scanning source and target with rsync --dry-run. No destination files will be changed.\n'
 
     if rsync "${rsync_common_args[@]}" --dry-run --stats --human-readable \
