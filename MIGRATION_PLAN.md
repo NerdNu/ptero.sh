@@ -108,7 +108,6 @@ Example:
       "source": "/servers/lobby-dev",
       "allocation_id": 2,
       "type": "paper",
-      "service": null,
       "panel_uuid": "001ee416-999e-4640-a287-f9f6a1fbe8c1"
     }
   ]
@@ -154,7 +153,6 @@ Each server needs:
   "source": "/servers/lobby-dev",
   "allocation_id": 2,
   "type": "paper",
-  "service": null,
   "panel_uuid": null
 }
 ```
@@ -224,6 +222,8 @@ The default disk margin is 110%. To test another margin:
 MIGRATOR_DRY_RUN=1 MIGRATOR_DISK_SAFETY_PERCENT=125 ./panel-migrator lobby-dev
 ```
 
+Dry-run mode now walks the same read-only preflight path as a real migration. It will still prompt if it finds a matching Java server in the source directory, ask you to stop it with `mark2`, and re-check that the source directory is quiet before continuing the dry-run preview.
+
 
 ### 6. Run the real migration
 
@@ -245,11 +245,13 @@ The migrator will:
 2. Refuse a non-empty target, unless `MIGRATOR_REPLACE_TARGET=1`.
 3. Refuse if the target Panel container is running.
 4. Check disk space with the configured safety margin.
-5. Stop the old systemd service if one is configured.
-6. Copy files with rsync.
-7. Update `server.properties`.
-8. Write `.panel-migration.json`.
-9. Fix ownership to `pterodactyl:pterodactyl`.
+5. Check for a running Java server whose process working directory matches the source directory.
+6. If one is found, ask you to stop it gracefully with `mark2`, then confirm by typing `STOPPED`.
+7. Re-check that the matching Java process is gone and that there is no more known open-file activity in the source directory.
+8. Copy files with rsync.
+9. Update `server.properties`.
+10. Write `.panel-migration.json`.
+11. Fix ownership to `pterodactyl:pterodactyl`.
 
 Use these overrides only when intentional:
 
@@ -261,6 +263,8 @@ MIGRATOR_FORCE=1 ./panel-migrator lobby-dev
 `MIGRATOR_REPLACE_TARGET=1` moves existing target contents aside before migration. It does not merge over them.
 
 `MIGRATOR_FORCE=1` allows re-migration over a target that already has a migration marker. This can overwrite newer played-on data from the old source state, so use it carefully.
+
+If the source directory still has open-file activity after the Java server stops, clear that activity before continuing. Common examples are shells, editors, or other tools with open files somewhere under the source path.
 
 
 ## Backend config after migration
@@ -345,20 +349,13 @@ Find a process working directory:
 sudo readlink -f /proc/<pid>/cwd
 ```
 
-Find possible systemd services:
+Show known open-file activity under a source server directory:
 
 ```sh
-systemctl list-unit-files | grep -Ei 'minecraft|paper|spigot|purpur|lobby|survival|creative'
-```
-
-Inspect a service:
-
-```sh
-systemctl cat <service-name>
+sudo lsof -nP +D /servers/lobby-dev
 ```
 
 
 ## Repeat
 
 After one server is migrated and tested, repeat the process for the next world.
-
