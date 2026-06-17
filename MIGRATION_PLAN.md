@@ -222,7 +222,7 @@ The default disk margin is 110%. To test another margin:
 MIGRATOR_DRY_RUN=1 MIGRATOR_DISK_SAFETY_PERCENT=125 ./panel-migrator lobby-dev
 ```
 
-Dry-run mode now walks the same read-only preflight path as a real migration. It will still prompt if it finds a matching Java server in the source directory, ask you to stop it with `mark2`, and re-check that the source directory is quiet before continuing the dry-run preview.
+Dry-run mode now walks the same read-only preflight path as a real migration when run with `MIGRATOR_DRY_RUN_SUDO=1`. Without that flag, it skips the privileged source-process, source-activity, and target-container checks, and prints exactly which checks were skipped and how to include them.
 
 
 ### 6. Run the real migration

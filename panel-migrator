@@ -452,6 +452,26 @@ print_source_activity_report() {
   printf '%s\n' "$report" >&2
 }
 
+print_skipped_dry_run_privileged_checks() {
+  local source="$1"
+  local uuid="$2"
+
+  cat <<MSG
+Dry run: skipping privileged preflight checks because MIGRATOR_DRY_RUN_SUDO is not set.
+
+Skipped checks:
+  1. Match any running Java server process to source directory: $source
+     Would inspect process working directories via sudo readlink on /proc/<pid>/cwd.
+  2. Check for open-file activity under source directory: $source
+     Would run sudo lsof -nP +D "$source".
+  3. Confirm target Panel container is not running: $uuid
+     Would run sudo docker ps and compare container names.
+
+To include those read-only privileged checks in dry-run mode, rerun with:
+  MIGRATOR_DRY_RUN=1 MIGRATOR_DRY_RUN_SUDO=1 ./panel-migrator <identifier>
+MSG
+}
+
 ensure_source_quiesced() {
   local source="$1"
   local java_report activity_report
@@ -773,8 +793,13 @@ PLAN
 
   if [[ "${MIGRATOR_DRY_RUN:-0}" == "1" ]]; then
     printf 'Dry run: performing read-only preflight checks and prompts.\n'
-    ensure_source_quiesced "$source"
-    check_target_container_stopped "$uuid"
+
+    if [[ "${MIGRATOR_DRY_RUN_SUDO:-0}" == "1" ]]; then
+      ensure_source_quiesced "$source"
+      check_target_container_stopped "$uuid"
+    else
+      print_skipped_dry_run_privileged_checks "$source" "$uuid"
+    fi
 
     printf 'Dry run: scanning source and target with rsync --dry-run. No destination files will be changed.\n'
 
