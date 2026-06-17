@@ -12,7 +12,7 @@ die() {
 require_tools() {
   local missing=0
 
-  for tool in jq rsync awk df; do
+  for tool in jq rsync awk df ps readlink lsof; do
     if ! command -v "$tool" >/dev/null 2>&1; then
       printf 'Missing required command: %s\n' "$tool" >&2
       missing=1
@@ -174,12 +174,11 @@ list_servers() {
         (.panel_uuid // "-"),
         (.allocation_id | tostring),
         (.type // "paper"),
-        (.source // ""),
-        (.service // "-")
+        (.source // "")
       ]
     | @tsv
   ' "$CONFIG_FILE" |
-  while IFS=$'\t' read -r id name uuid allocation_id type source service; do
+  while IFS=$'\t' read -r id name uuid allocation_id type source; do
     local source_status target_status target_path
 
     if [[ -d "$source" ]]; then
@@ -316,6 +315,28 @@ confirm_real_migration() {
   [[ "$answer" == "MIGRATE" ]]
 }
 
+confirm_manual_source_stop() {
+  local source="$1"
+  local answer
+
+  if [[ "${MIGRATOR_YES:-0}" == "1" ]]; then
+    die "source server still appears active for $source; stop it gracefully with mark2, then rerun without MIGRATOR_YES or after confirming it is fully stopped"
+  fi
+
+  cat <<MSG
+Matching Java server still appears to be running from:
+  $source
+
+Stop the source server gracefully with mark2 before migrating.
+After it has stopped, return here and type STOPPED to re-check the source directory.
+MSG
+
+  printf 'Type STOPPED after the source server is fully stopped: '
+  read -r answer
+
+  [[ "$answer" == "STOPPED" ]]
+}
+
 adopt_server() {
   local id="$1"
   local uuid="$2"
@@ -383,21 +404,83 @@ set_property() {
   fi
 }
 
-stop_old_service_if_configured() {
-  local service="$1"
+source_java_process_report() {
+  local source="$1"
+  local source_real cwd pid comm args
+  local report=""
 
-  [[ -n "$service" && "$service" != "null" && "$service" != "-" ]] || return 0
+  source_real="$(readlink -f "$source")"
 
-  if systemctl list-unit-files "$service" >/dev/null 2>&1; then
-    printf 'Stopping old service: %s\n' "$service"
+  while read -r pid comm args; do
+    [[ "$comm" == java* ]] || continue
 
-    if [[ "${MIGRATOR_DRY_RUN:-0}" == "1" ]]; then
-      printf 'Dry run: sudo systemctl stop %s\n' "$service"
-    else
-      sudo systemctl stop "$service"
-    fi
-  else
-    printf 'Configured service not found, continuing: %s\n' "$service"
+    cwd="$(sudo readlink -f "/proc/${pid}/cwd" 2>/dev/null || true)"
+    [[ -n "$cwd" ]] || continue
+    [[ "$cwd" == "$source_real" ]] || continue
+
+    report+=$(printf '%s\t%s\t%s\n' "$pid" "$cwd" "$args")
+  done < <(ps -eo pid=,comm=,args=)
+
+  printf '%s' "$report"
+}
+
+source_activity_report() {
+  local source="$1"
+  sudo lsof -nP +D "$source" 2>/dev/null || true
+}
+
+print_source_java_process_report() {
+  local report="$1"
+
+  [[ -n "$report" ]] || return 0
+
+  printf 'Matching Java process(es):\n' >&2
+  while IFS=$'\t' read -r pid cwd args; do
+    [[ -n "$pid" ]] || continue
+    printf '  PID %s\n' "$pid" >&2
+    printf '    CWD: %s\n' "$cwd" >&2
+    printf '    CMD: %s\n' "$args" >&2
+  done <<<"$report"
+}
+
+print_source_activity_report() {
+  local report="$1"
+
+  [[ -n "$report" ]] || return 0
+
+  printf 'Open file activity under source directory:\n' >&2
+  printf '%s\n' "$report" >&2
+}
+
+ensure_source_quiesced() {
+  local source="$1"
+  local java_report activity_report
+
+  java_report="$(source_java_process_report "$source")"
+  activity_report="$(source_activity_report "$source")"
+
+  if [[ -z "$java_report" && -z "$activity_report" ]]; then
+    return 0
+  fi
+
+  if [[ -z "$java_report" ]]; then
+    print_source_activity_report "$activity_report"
+    die "source directory still has open file activity; close the remaining processes and rerun migration"
+  fi
+
+  print_source_java_process_report "$java_report"
+  [[ -n "$activity_report" ]] && print_source_activity_report "$activity_report"
+
+  confirm_manual_source_stop "$source" || die "aborted"
+
+  java_report="$(source_java_process_report "$source")"
+  activity_report="$(source_activity_report "$source")"
+
+  if [[ -n "$java_report" || -n "$activity_report" ]]; then
+    printf 'Source directory still shows running process state or open file activity after manual stop.\n' >&2
+    print_source_java_process_report "$java_report"
+    print_source_activity_report "$activity_report"
+    die "source server is not fully stopped; resolve remaining activity and rerun migration"
   fi
 }
 
@@ -539,7 +622,7 @@ write_migration_marker() {
 
 migrate_server() {
   local id="$1"
-  local root owner name source allocation_id type service uuid target_dir port target_count
+  local root owner name source allocation_id type uuid target_dir port target_count
   local marker_status target_policy exclude_summary
   local disk_safety available_bytes required_bytes required_with_margin
   local disk_required_human disk_required_margin_human disk_available_human disk_policy
@@ -556,7 +639,6 @@ migrate_server() {
   source="$(server_required_field "$id" "source")"
   allocation_id="$(server_required_field "$id" "allocation_id")"
   type="$(server_field "$id" "type" "paper")"
-  service="$(server_field "$id" "service" "")"
 
   [[ -d "$source" ]] || die "source directory does not exist: $source"
 
@@ -659,7 +741,6 @@ Migration plan:
   Target path:      $target_dir
   Allocation ID:    $allocation_id
   Allocation port:  $port
-  Old service:      ${service:-none}
   Target entries:   $target_count
   Marker:           $marker_status
   Target policy:    $target_policy
@@ -689,8 +770,6 @@ PLAN
   else
     confirm_real_migration || die "aborted"
   fi
-
-  stop_old_service_if_configured "$service"
 
   if [[ "${MIGRATOR_DRY_RUN:-0}" == "1" ]]; then
     printf 'Dry run: scanning source and target with rsync --dry-run. No destination files will be changed.\n'
@@ -725,6 +804,7 @@ MSG
     return 0
   fi
 
+  ensure_source_quiesced "$source"
   check_target_container_stopped "$uuid"
   prepare_target_for_migration "$target_dir" "$target_count"
 
@@ -802,5 +882,3 @@ main() {
 }
 
 main "$@"
-
-
