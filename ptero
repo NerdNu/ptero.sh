@@ -14,6 +14,7 @@ Read-only:
   ./ptero allocations
   ./ptero servers
   ./ptero backend [--velocity-name <name>] [--check-reachability] <server>
+  ./ptero backend <server>
   ./ptero egg [egg-id]
 
 Write:

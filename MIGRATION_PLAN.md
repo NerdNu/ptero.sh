@@ -322,6 +322,7 @@ Find the backend container IP if Velocity is still using container-internal rout
 
 ```sh
 ./ptero backend --velocity-name lobby lobby-dev
+./ptero backend lobby-dev
 ```
 
 Update `velocity.toml` to point to the backend container IP and backend port.
