@@ -13,7 +13,7 @@ Read-only:
   ./ptero users
   ./ptero allocations
   ./ptero servers
-  ./ptero backend [--velocity-name <name>] <server>
+  ./ptero backend [--velocity-name <name>] [--check-reachability] <server>
   ./ptero egg [egg-id]
 
 Write:
@@ -26,6 +26,7 @@ Examples:
   ./ptero servers
   ./ptero backend lobby-dev
   ./ptero backend --velocity-name lobby 10
+  ./ptero backend --check-reachability --velocity-name lobby 10
   ./ptero egg 1
   PTERO_DRY_RUN=1 ./ptero create lobby-dev "Lobby Dev" 2
   PTERO_DRY_RUN=1 ./ptero create lobby-dev "Lobby Dev" 2 paper
