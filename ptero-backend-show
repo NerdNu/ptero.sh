@@ -7,15 +7,21 @@ source "${SCRIPT_DIR}/ptero-common.sh"
 usage() {
   cat <<'USAGE'
 Usage:
-  ./ptero-backend-show [--velocity-name <name>] <server>
+  ./ptero-backend-show [--velocity-name <name>] [--check-reachability] <server>
 
 Matches <server> against Panel server ID, external ID, UUID, short UUID, or exact name.
+
+If --check-reachability is set, the command tries to test TCP reachability from the
+Velocity container to the backend Docker-network IP and port. It uses
+`PTERO_VELOCITY_SERVER` when set. Otherwise it auto-detects a single Panel server
+whose name or external ID contains "velocity".
 
 Examples:
   ./ptero-backend-show 10
   ./ptero-backend-show lobby-dev
   ./ptero-backend-show "Lobby Dev"
   ./ptero-backend-show --velocity-name lobby 10
+  ./ptero-backend-show --check-reachability --velocity-name lobby 10
 USAGE
 }
 
@@ -32,31 +38,43 @@ require_tools() {
   [[ "$missing" -eq 0 ]] || exit 1
 }
 
-docker_inspect_json() {
-  local container="$1"
+run_docker_command() {
+  local prompt_message="$1"
+  shift
   local output
 
   if command -v docker >/dev/null 2>&1; then
-    if output="$(docker inspect "$container" 2>/dev/null)"; then
+    if output="$(docker "$@" 2>/dev/null)"; then
       printf '%s\n' "$output"
       return 0
     fi
   fi
 
   if command -v sudo >/dev/null 2>&1; then
-    if output="$(sudo -n docker inspect "$container" 2>/dev/null)"; then
+    if output="$(sudo -n docker "$@" 2>/dev/null)"; then
       printf '%s\n' "$output"
       return 0
     fi
 
-    printf 'Docker inspect requires sudo access; requesting it now.\n' >&2
-    if output="$(sudo docker inspect "$container" 2>/dev/null)"; then
+    printf '%s\n' "$prompt_message" >&2
+    if output="$(sudo docker "$@" 2>/dev/null)"; then
       printf '%s\n' "$output"
       return 0
     fi
   fi
 
   return 1
+}
+
+docker_inspect_json() {
+  local container="$1"
+  run_docker_command 'Docker inspect requires sudo access; requesting it now.' inspect "$container"
+}
+
+docker_exec_capture() {
+  local container="$1"
+  shift
+  run_docker_command 'Docker exec requires sudo access; requesting it now.' exec "$container" "$@"
 }
 
 velocity_hint_from_networks() {
@@ -83,6 +101,7 @@ velocity_hint_from_networks() {
 
 parse_args() {
   velocity_name=""
+  check_reachability=0
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -93,6 +112,11 @@ parse_args() {
         }
         velocity_name="$2"
         shift 2
+        ;;
+
+      --check-reachability)
+        check_reachability=1
+        shift
         ;;
 
       -h|--help)
@@ -123,6 +147,121 @@ parse_args() {
   }
 
   server_query="$1"
+}
+
+fetch_velocity_server_match() {
+  local page=1
+  local response total_pages matches_count matched
+
+  if [[ -n "${PTERO_VELOCITY_SERVER:-}" ]]; then
+    fetch_server_match "$PTERO_VELOCITY_SERVER"
+    return $?
+  fi
+
+  while :; do
+    response="$(ptero_api GET "/api/application/servers?include=allocations&per_page=100&page=${page}")"
+
+    matched="$(
+      printf '%s\n' "$response" \
+        | jq -cs '
+            map(
+              .data[]
+              | .attributes as $s
+              | select(
+                  (($s.external_id // "") | ascii_downcase | contains("velocity"))
+                  or ($s.name | ascii_downcase | contains("velocity"))
+                )
+              | {
+                  id: $s.id,
+                  external_id: ($s.external_id // "-"),
+                  uuid: $s.uuid,
+                  identifier: (($s.uuid | split("-"))[0]),
+                  name: $s.name,
+                  allocations: (
+                    $s.relationships.allocations.data // []
+                    | map({
+                        id: .attributes.id,
+                        ip: .attributes.ip,
+                        ip_alias: (.attributes.ip_alias // ""),
+                        port: .attributes.port,
+                        is_default: (.attributes.is_default // false)
+                      })
+                  )
+                }
+            )
+            | add
+          '
+    )"
+
+    if [[ -n "$matched" && "$matched" != "null" ]]; then
+      matches+=("$matched")
+    fi
+
+    total_pages="$(printf '%s\n' "$response" | jq -r '.meta.pagination.total_pages // 1')"
+    if [[ "$page" -ge "$total_pages" ]]; then
+      break
+    fi
+
+    page=$((page + 1))
+  done
+
+  matches_count="${#matches[@]}"
+  if [[ "$matches_count" -eq 1 ]]; then
+    printf '%s\n' "${matches[0]}"
+    return 0
+  fi
+
+  if [[ "$matches_count" -eq 0 ]]; then
+    printf 'Could not auto-detect a Velocity Panel server. Set PTERO_VELOCITY_SERVER to a server ID, external ID, UUID, or exact name.\n' >&2
+  else
+    printf 'Auto-detected multiple Velocity-like Panel servers. Set PTERO_VELOCITY_SERVER to the intended server.\n' >&2
+    printf '%s\n' "${matches[@]}" | jq -r '"  - ID \(.id): \(.name) [\(.external_id)]"' >&2
+  fi
+
+  return 1
+}
+
+check_backend_reachability() {
+  local velocity_server_json="$1"
+  local target_ip="$2"
+  local target_port="$3"
+  local velocity_uuid velocity_name_local velocity_container_name velocity_running check_output
+
+  velocity_uuid="$(printf '%s\n' "$velocity_server_json" | jq -r '.uuid')"
+  velocity_name_local="$(printf '%s\n' "$velocity_server_json" | jq -r '.name')"
+
+  printf '\nReachability check:\n'
+  printf '  Velocity server: %s (%s)\n' "$velocity_name_local" "$velocity_uuid"
+  printf '  Target:          %s:%s\n' "$target_ip" "$target_port"
+
+  if ! velocity_inspect_json="$(docker_inspect_json "$velocity_uuid")"; then
+    printf '  Result:          could not inspect the Velocity container.\n'
+    return 1
+  fi
+
+  velocity_container_name="$(printf '%s\n' "$velocity_inspect_json" | jq -r '.[0].Name // empty | ltrimstr("/")')"
+  velocity_running="$(printf '%s\n' "$velocity_inspect_json" | jq -r '.[0].State.Running // false')"
+
+  printf '  Container:       %s\n' "${velocity_container_name:-$velocity_uuid}"
+
+  if [[ "$velocity_running" != "true" ]]; then
+    printf '  Result:          Velocity container is not running.\n'
+    return 1
+  fi
+
+  if check_output="$(docker_exec_capture "$velocity_uuid" sh -lc "python3 -c 'import socket,sys; s=socket.socket(); s.settimeout(3); s.connect((sys.argv[1], int(sys.argv[2]))); s.close()' '$target_ip' '$target_port'" 2>/dev/null)"; then
+    printf '  Result:          reachable from Velocity container via python3 socket check.\n'
+    return 0
+  fi
+
+  if check_output="$(docker_exec_capture "$velocity_uuid" sh -lc "nc -z -w 3 '$target_ip' '$target_port'" 2>/dev/null)"; then
+    printf '  Result:          reachable from Velocity container via netcat.\n'
+    return 0
+  fi
+
+  printf '  Result:          connection test failed from the Velocity container.\n'
+  printf '  Detail:          could not connect to %s:%s from %s.\n' "$target_ip" "$target_port" "$velocity_name_local"
+  return 1
 }
 
 fetch_server_match() {
@@ -183,6 +322,7 @@ fetch_server_match() {
 
 require_tools
 parse_args "$@"
+matches=()
 server_json="$(fetch_server_match "$server_query")" || {
   printf 'No Panel server matched: %s\n' "$server_query" >&2
   exit 1
@@ -298,6 +438,18 @@ if inspect_json="$(docker_inspect_json "$uuid")"; then
   else
     printf '\nVelocity hint:\n'
     printf '  No Docker-network IP is available yet for %s.\n' "$server_key"
+  fi
+
+  if [[ "$check_reachability" == "1" ]]; then
+    first_network_ip="$(printf '%s\n' "$networks_json" | jq -r 'to_entries | map(.value.ip_address // "") | map(select(length > 0)) | .[0] // empty')"
+    if [[ -n "$first_network_ip" && -n "$allocation_port" ]]; then
+      velocity_server_json="$(fetch_velocity_server_match)" || exit 1
+      check_backend_reachability "$velocity_server_json" "$first_network_ip" "$allocation_port" || exit 1
+    else
+      printf '\nReachability check:\n'
+      printf '  Skipped: no Docker-network backend IP is available yet for this server.\n'
+      printf '  Hint:    start the backend once, then rerun ./ptero backend --check-reachability %s\n' "$server_query"
+    fi
   fi
 else
   printf '\nDocker container:\n'
