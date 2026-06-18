@@ -54,6 +54,7 @@ Useful read-only commands:
 ./ptero users
 ./ptero allocations
 ./ptero servers
+./ptero backend lobby-dev
 ./ptero egg 1
 ```
 
@@ -108,7 +109,6 @@ Example:
       "source": "/servers/lobby-dev",
       "allocation_id": 2,
       "type": "paper",
-      "service": null,
       "panel_uuid": "001ee416-999e-4640-a287-f9f6a1fbe8c1"
     }
   ]
@@ -154,7 +154,6 @@ Each server needs:
   "source": "/servers/lobby-dev",
   "allocation_id": 2,
   "type": "paper",
-  "service": null,
   "panel_uuid": null
 }
 ```
@@ -224,6 +223,8 @@ The default disk margin is 110%. To test another margin:
 MIGRATOR_DRY_RUN=1 MIGRATOR_DISK_SAFETY_PERCENT=125 ./panel-migrator lobby-dev
 ```
 
+Dry-run mode now walks the same read-only preflight path as a real migration when run with `MIGRATOR_DRY_RUN_SUDO=1`. Without that flag, it skips the privileged source-process, source-activity, and target-container checks, and prints exactly which checks were skipped and how to include them.
+
 
 ### 6. Run the real migration
 
@@ -245,11 +246,13 @@ The migrator will:
 2. Refuse a non-empty target, unless `MIGRATOR_REPLACE_TARGET=1`.
 3. Refuse if the target Panel container is running.
 4. Check disk space with the configured safety margin.
-5. Stop the old systemd service if one is configured.
-6. Copy files with rsync.
-7. Update `server.properties`.
-8. Write `.panel-migration.json`.
-9. Fix ownership to `pterodactyl:pterodactyl`.
+5. Check for a running Java server whose process working directory matches the source directory.
+6. If one is found, ask you to stop it gracefully with `mark2`, then confirm by typing `STOPPED`.
+7. Re-check that the matching Java process is gone and that there is no more known open-file activity in the source directory.
+8. Copy files with rsync.
+9. Update `server.properties`.
+10. Write `.panel-migration.json`.
+11. Fix ownership to `pterodactyl:pterodactyl`.
 
 Use these overrides only when intentional:
 
@@ -262,6 +265,8 @@ MIGRATOR_FORCE=1 ./panel-migrator lobby-dev
 
 `MIGRATOR_FORCE=1` allows re-migration over a target that already has a migration marker. This can overwrite newer played-on data from the old source state, so use it carefully.
 
+If the source directory still has open-file activity after the Java server stops, clear that activity before continuing. Common examples are shells, editors, or other tools with open files somewhere under the source path.
+
 
 ## Backend config after migration
 
@@ -272,6 +277,20 @@ online-mode=false
 server-ip=0.0.0.0
 server-port=<allocation-port>
 ```
+
+### Why?
+
+- server-port=<allocation port>
+  - On bare metal, the server may have been bound to a port chosen for the old host layout.
+  - In Panel, the server should listen on the allocation assigned to that container.
+  - So the migrator rewrites the port to match the selected Panel allocation.
+- server-ip=0.0.0.0
+  - On bare metal, server-ip may be blank or pinned to a host-specific address.
+  - Inside the Panel container, binding to 0.0.0.0 makes the server listen on the container interface in the normal Docker networking model.
+  - That is the safest generic containerized setting.
+- online-mode=false
+  - This is typical when a backend Paper server sits behind Velocity and relies on proxy forwarding rather than doing direct Mojang authentication itself.
+  - The doc already assumes a Velocity-backed setup and separately tells you to verify forwarding config and shared secret.
 
 For Paper behind Velocity, also confirm `config/paper-global.yml` has Velocity forwarding enabled and uses the same forwarding secret as Velocity:
 
@@ -301,7 +320,7 @@ Check the backend console.
 Find the backend container IP if Velocity is still using container-internal routing:
 
 ```sh
-sudo docker inspect <backend-container-or-uuid> | jq -r '.[0].NetworkSettings.Networks | to_entries[] | "\(.key) \(.value.IPAddress)"'
+./ptero backend lobby-dev
 ```
 
 Update `velocity.toml` to point to the backend container IP and backend port.
@@ -345,27 +364,13 @@ Find a process working directory:
 sudo readlink -f /proc/<pid>/cwd
 ```
 
-Find possible systemd services:
+Show known open-file activity under a source server directory:
 
 ```sh
-systemctl list-unit-files | grep -Ei 'minecraft|paper|spigot|purpur|lobby|survival|creative'
-```
-
-Inspect a service:
-
-```sh
-systemctl cat <service-name>
+sudo lsof -nP +D /servers/lobby-dev
 ```
 
 
 ## Repeat
 
 After one server is migrated and tested, repeat the process for the next world.
-EOF
-
-```
-
-This updates the plan to match the current tooling and changes the old "start once, then stop it" instruction to the safer "create but do not start before migration" flow. Confidence: 98/100.
-```
-
-
