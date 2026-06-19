@@ -567,6 +567,7 @@ check_backend_reachability() {
 
   velocity_uuid="$(printf '%s\n' "$velocity_server_json" | jq -r '.uuid')"
   velocity_name_local="$(printf '%s\n' "$velocity_server_json" | jq -r '.name')"
+  last_reachability_status="failed"
 
   printf '\nReachability check:\n'
   printf '  Target label:    %s\n' "$target_label"
@@ -584,6 +585,7 @@ check_backend_reachability() {
   printf '  Container:       %s\n' "${velocity_container_name:-$velocity_uuid}"
 
   if [[ "$velocity_running" != "true" ]]; then
+    last_reachability_status="inconclusive"
     printf '  Result:          Velocity container is not running.\n'
     return 1
   fi
@@ -608,40 +610,47 @@ fi
 
   case "$probe_result" in
     $'reachable\tnc')
+      last_reachability_status="reachable"
       printf '  Result:          reachable from Velocity container via netcat.\n'
       return 0
       ;;
 
     $'reachable\tbash-dev-tcp')
+      last_reachability_status="reachable"
       printf '  Result:          reachable from Velocity container via bash /dev/tcp.\n'
       return 0
       ;;
 
     $'failed\tnc')
+      last_reachability_status="failed"
       printf '  Result:          connection test failed from the Velocity container via netcat.\n'
       printf '  Detail:          could not connect to %s:%s from %s.\n' "$target_ip" "$target_port" "$velocity_name_local"
       return 1
       ;;
 
     $'failed\tbash-dev-tcp')
+      last_reachability_status="failed"
       printf '  Result:          connection test failed from the Velocity container via bash /dev/tcp.\n'
       printf '  Detail:          could not connect to %s:%s from %s.\n' "$target_ip" "$target_port" "$velocity_name_local"
       return 1
       ;;
 
     $'unavailable\tnone')
+      last_reachability_status="inconclusive"
       printf '  Result:          could not verify reachability from inside the Velocity container.\n'
       printf '  Detail:          neither netcat nor bash with /dev/tcp is available there.\n'
       return 1
       ;;
 
     '')
+      last_reachability_status="inconclusive"
       printf '  Result:          could not verify reachability from inside the Velocity container.\n'
       printf '  Detail:          the probe timed out or returned no result.\n'
       return 1
       ;;
 
     *)
+      last_reachability_status="inconclusive"
       probe_detail="${probe_result:-no probe result returned}"
       printf '  Result:          could not verify reachability from inside the Velocity container.\n'
       printf '  Detail:          probe execution was inconclusive: %s\n' "$probe_detail"
@@ -665,6 +674,8 @@ report_reachability_summary() {
     printf '  Recommendation:  current target mode looks usable.\n'
   elif [[ "$docker_status" == "reachable" ]]; then
     printf '  Recommendation:  rerun with --target-mode docker for this setup.\n'
+  elif [[ "$selected_status" == "inconclusive" || "$docker_status" == "inconclusive" ]]; then
+    printf '  Recommendation:  probe result was inconclusive; verify tooling or test manually from Velocity.\n'
   else
     printf '  Recommendation:  neither tested path was confirmed reachable from Velocity.\n'
   fi
@@ -889,6 +900,8 @@ if [[ "$check_reachability" == "1" ]]; then
     selected_reachability_status="failed"
     if check_backend_reachability "$velocity_server_json" "$resolved_target_host" "$resolved_target_port" "selected"; then
       selected_reachability_status="reachable"
+    else
+      selected_reachability_status="$last_reachability_status"
     fi
 
     docker_reachability_status=""
@@ -896,6 +909,8 @@ if [[ "$check_reachability" == "1" ]]; then
       docker_reachability_status="failed"
       if check_backend_reachability "$velocity_server_json" "$first_network_ip" "$allocation_port" "docker-network"; then
         docker_reachability_status="reachable"
+      else
+        docker_reachability_status="$last_reachability_status"
       fi
     fi
 
