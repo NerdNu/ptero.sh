@@ -89,6 +89,23 @@ docker_exec_capture() {
   run_docker_command 'Docker exec requires sudo access; requesting it now.' exec "$container" "$@"
 }
 
+capture_with_timeout() {
+  local seconds="$1"
+  shift
+
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$seconds" "$@"
+    return $?
+  fi
+
+  if command -v perl >/dev/null 2>&1; then
+    perl -e 'alarm shift @ARGV; exec @ARGV' "$seconds" "$@"
+    return $?
+  fi
+
+  "$@"
+}
+
 velocity_hint_from_networks() {
   local server_key="$1"
   local networks_json="$2"
@@ -569,7 +586,7 @@ check_backend_reachability() {
     return 1
   fi
 
-  probe_result="$(docker_exec_capture "$velocity_uuid" sh -lc '
+  probe_result="$(capture_with_timeout 6 docker_exec_capture "$velocity_uuid" sh -lc '
 if command -v nc >/dev/null 2>&1; then
   if nc -z -w 3 "$1" "$2"; then
     printf "reachable\tnc\n"
@@ -613,6 +630,12 @@ fi
     $'unavailable\tnone')
       printf '  Result:          could not verify reachability from inside the Velocity container.\n'
       printf '  Detail:          neither netcat nor bash with /dev/tcp is available there.\n'
+      return 1
+      ;;
+
+    '')
+      printf '  Result:          could not verify reachability from inside the Velocity container.\n'
+      printf '  Detail:          the probe timed out or returned no result.\n'
       return 1
       ;;
 
