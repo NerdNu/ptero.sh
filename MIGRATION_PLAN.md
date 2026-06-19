@@ -110,13 +110,16 @@ Example:
       "source": "/servers/lobby-dev",
       "allocation_id": 2,
       "type": "paper",
-      "panel_uuid": "001ee416-999e-4640-a287-f9f6a1fbe8c1"
+      "panel_uuid": "001ee416-999e-4640-a287-f9f6a1fbe8c1",
+      "velocity_backend_key": "lobby"
     }
   ]
 }
 ```
 
 The default rsync exclude omits WorldEdit unpack cache data. It is not expected to be world state.
+
+`velocity_backend_key` is the exact `[servers]` entry name in `velocity.toml` that should point at this backend. Use an explicit value even when it differs from the Panel server ID or display name.
 
 
 ## Migration steps for one server
@@ -155,9 +158,12 @@ Each server needs:
   "source": "/servers/lobby-dev",
   "allocation_id": 2,
   "type": "paper",
-  "panel_uuid": null
+  "panel_uuid": null,
+  "velocity_backend_key": "lobby"
 }
 ```
+
+Set `velocity_backend_key` to the logical backend name used in Velocity's `[servers]` section. This must be explicit because the desired Velocity key may not match the Panel server ID, external ID, or display name.
 
 If the Panel server already exists, set `panel_uuid` to the existing server UUID.
 
@@ -325,7 +331,14 @@ Find the backend container IP if Velocity is still using container-internal rout
 ./ptero endpoint lobby-dev
 ```
 
-Update `velocity.toml` to point to the backend container IP and backend port.
+Update `velocity.toml` to point the configured `velocity_backend_key` at the backend container IP and backend port.
+
+Example:
+
+```toml
+[servers]
+lobby = "10.90.0.2:27001"
+```
 
 Then restart Velocity and test through:
 
