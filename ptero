@@ -13,13 +13,14 @@ Read-only:
   ./ptero users
   ./ptero allocations
   ./ptero servers
-  ./ptero endpoint [--velocity-name <name>] [--target-mode <allocation|docker>] [--target-host <host>] [--target-port <port>] [--check-reachability] [--update-velocity-config] [--dry-run] <server>
+  ./ptero endpoint [--velocity-name <name>] [--target-host <host>] [--target-port <port>] [--check-reachability] [--update-velocity-config] <server>
   ./ptero endpoint <server>
   ./ptero egg [egg-id]
 
 Write:
   ./ptero create <external-id> <display-name> <allocation-id> [server-type]
   ./ptero create-paper <external-id> <display-name> <allocation-id>
+  ./ptero velocity-config-update <identifier>
 
 Examples:
   ./ptero ping
@@ -27,10 +28,9 @@ Examples:
   ./ptero servers
   ./ptero endpoint lobby-dev
   ./ptero endpoint --velocity-name lobby 10
-  ./ptero endpoint --target-mode allocation --velocity-name lobby 10
   ./ptero endpoint --check-reachability --velocity-name lobby 10
   ./ptero endpoint --update-velocity-config --velocity-name lobby 10
-  ./ptero endpoint --update-velocity-config --dry-run --velocity-name lobby 10
+  ./ptero velocity-config-update lobby-dev
   ./ptero egg 1
   PTERO_DRY_RUN=1 ./ptero create lobby-dev "Lobby Dev" 2
   PTERO_DRY_RUN=1 ./ptero create lobby-dev "Lobby Dev" 2 paper
@@ -90,6 +90,10 @@ case "$command" in
 
   create-paper|server-create-paper)
     run_script ptero-server-create-paper "$@"
+    ;;
+
+  velocity-config-update|velocity-update)
+    run_script ptero-velocity-config-update "$@"
     ;;
 
   help|-h|--help)

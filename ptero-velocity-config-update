@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+source "${SCRIPT_DIR}/ptero-common.sh"
+
+CONFIG_FILE="${CONFIG_FILE:-${SCRIPT_DIR}/panel-migrator.json}"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  ./ptero-velocity-config-update <identifier>
+
+Reads `velocity_backend_key` from panel-migrator.json, resolves the backend's
+Docker-network endpoint, and updates the matching `[servers]` entry in
+Velocity's `velocity.toml`.
+
+Examples:
+  ./ptero-velocity-config-update lobby-dev
+USAGE
+}
+
+die() {
+  printf 'Error: %s\n' "$*" >&2
+  exit 1
+}
+
+require_config() {
+  [[ -f "$CONFIG_FILE" ]] || die "config file missing: $CONFIG_FILE"
+}
+
+fetch_server_config() {
+  local identifier="$1"
+
+  jq -cer --arg identifier "$identifier" '
+    [ .servers[] | select(.id == $identifier) ] as $matches
+    | if ($matches | length) == 1 then
+        $matches[0]
+      elif ($matches | length) == 0 then
+        empty
+      else
+        error("multiple servers matched identifier: \($identifier)")
+      end
+  ' "$CONFIG_FILE"
+}
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help)
+        usage
+        exit 0
+        ;;
+
+      --)
+        shift
+        break
+        ;;
+
+      -*)
+        printf 'Unknown option: %s\n' "$1" >&2
+        usage >&2
+        exit 1
+        ;;
+
+      *)
+        break
+        ;;
+    esac
+  done
+
+  [[ $# -eq 1 ]] || {
+    usage >&2
+    exit 1
+  }
+
+  server_identifier="$1"
+}
+
+main() {
+  local server_config velocity_backend_key panel_server_query
+  local -a endpoint_args
+
+  ptero_require_tools
+  require_config
+  parse_args "$@"
+
+  server_config="$(fetch_server_config "$server_identifier")" || die "unknown server identifier: $server_identifier"
+
+  velocity_backend_key="$(printf '%s\n' "$server_config" | jq -r '.velocity_backend_key // empty')"
+  [[ -n "$velocity_backend_key" ]] || die "server $server_identifier is missing required field: velocity_backend_key"
+
+  panel_server_query="$(printf '%s\n' "$server_config" | jq -r '.panel_uuid // .id')"
+  [[ -n "$panel_server_query" && "$panel_server_query" != "null" ]] || panel_server_query="$server_identifier"
+
+  printf 'Velocity config target:\n'
+  printf '  Identifier:      %s\n' "$server_identifier"
+  printf '  Panel query:     %s\n' "$panel_server_query"
+  printf '  Server key:      %s\n' "$velocity_backend_key"
+  printf '  Config file:     %s\n' "$CONFIG_FILE"
+
+  endpoint_args=(--velocity-name "$velocity_backend_key" --update-velocity-config)
+  endpoint_args+=("$panel_server_query")
+
+  exec "${SCRIPT_DIR}/ptero-endpoint-show" "${endpoint_args[@]}"
+}
+
+main "$@"

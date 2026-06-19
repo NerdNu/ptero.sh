@@ -9,7 +9,8 @@
       "source": "/servers/lobby-dev",
       "allocation_id": 2,
       "type": "paper",
-      "panel_uuid": "001ee416-999e-4640-a287-f9f6a1fbe8c1"
+      "panel_uuid": "001ee416-999e-4640-a287-f9f6a1fbe8c1",
+      "velocity_backend_key": "lobby"
     }
   ]
 }

@@ -865,7 +865,7 @@ Next:
   1. Start "$name" from Panel.
   2. Check the backend console.
   3. Confirm Velocity forwarding config and secret.
-  4. Point Velocity at this backend container IP and port $port.
+  4. Run ./ptero velocity-config-update $id to point Velocity at this backend container IP and port $port.
 DONE
 }
 
