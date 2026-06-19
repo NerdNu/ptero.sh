@@ -42,15 +42,15 @@ Next, review `panel-migrator.json` and update server entries as needed.
 ./ptero allocations
 ./ptero servers
 ./ptero egg 1
-./ptero backend --target-mode allocation --velocity-name lobby lobby-dev
-./ptero backend --update-velocity-config --dry-run --velocity-name lobby lobby-dev
+./ptero endpoint --target-mode allocation --velocity-name lobby lobby-dev
+./ptero endpoint --update-velocity-config --dry-run --velocity-name lobby lobby-dev
 ```
 
 Velocity config updates:
 
 ```sh
-./ptero backend --update-velocity-config --velocity-name lobby lobby-dev
-./ptero backend --check-reachability --update-velocity-config --velocity-name lobby lobby-dev
+./ptero endpoint --update-velocity-config --velocity-name lobby lobby-dev
+./ptero endpoint --check-reachability --update-velocity-config --velocity-name lobby lobby-dev
 ```
 
 By default this updates `velocity.toml` at

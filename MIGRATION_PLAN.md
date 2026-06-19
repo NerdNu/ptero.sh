@@ -54,8 +54,8 @@ Useful read-only commands:
 ./ptero users
 ./ptero allocations
 ./ptero servers
-./ptero backend lobby-dev
-./ptero backend --velocity-name lobby lobby-dev
+./ptero endpoint lobby-dev
+./ptero endpoint --velocity-name lobby lobby-dev
 ./ptero egg 1
 ```
 
@@ -321,8 +321,8 @@ Check the backend console.
 Find the backend container IP if Velocity is still using container-internal routing:
 
 ```sh
-./ptero backend --velocity-name lobby lobby-dev
-./ptero backend lobby-dev
+./ptero endpoint --velocity-name lobby lobby-dev
+./ptero endpoint lobby-dev
 ```
 
 Update `velocity.toml` to point to the backend container IP and backend port.
