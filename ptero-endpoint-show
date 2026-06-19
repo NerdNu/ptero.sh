@@ -561,6 +561,7 @@ check_backend_reachability() {
   local velocity_server_json="$1"
   local target_ip="$2"
   local target_port="$3"
+  local target_label="${4:-target}"
   local velocity_uuid velocity_name_local velocity_container_name velocity_running
   local probe_result probe_detail
 
@@ -568,6 +569,7 @@ check_backend_reachability() {
   velocity_name_local="$(printf '%s\n' "$velocity_server_json" | jq -r '.name')"
 
   printf '\nReachability check:\n'
+  printf '  Target label:    %s\n' "$target_label"
   printf '  Velocity server: %s (%s)\n' "$velocity_name_local" "$velocity_uuid"
   printf '  Target:          %s:%s\n' "$target_ip" "$target_port"
 
@@ -646,6 +648,26 @@ fi
       return 1
       ;;
   esac
+}
+
+report_reachability_summary() {
+  local selected_status="$1"
+  local docker_status="${2:-}"
+
+  printf '\nReachability summary:\n'
+  printf '  Selected target: %s\n' "$selected_status"
+
+  if [[ -n "$docker_status" ]]; then
+    printf '  Docker target:   %s\n' "$docker_status"
+  fi
+
+  if [[ "$selected_status" == "reachable" ]]; then
+    printf '  Recommendation:  current target mode looks usable.\n'
+  elif [[ "$docker_status" == "reachable" ]]; then
+    printf '  Recommendation:  rerun with --target-mode docker for this setup.\n'
+  else
+    printf '  Recommendation:  neither tested path was confirmed reachable from Velocity.\n'
+  fi
 }
 
 fetch_server_match() {
@@ -863,7 +885,25 @@ if [[ "$check_reachability" == "1" ]]; then
     printf '  Hint:    start the backend once, then rerun ./ptero endpoint --check-reachability %s\n' "$server_query"
   else
     velocity_server_json="$(fetch_velocity_server_match)" || exit 1
-    check_backend_reachability "$velocity_server_json" "$resolved_target_host" "$resolved_target_port" || exit 1
+
+    selected_reachability_status="failed"
+    if check_backend_reachability "$velocity_server_json" "$resolved_target_host" "$resolved_target_port" "selected"; then
+      selected_reachability_status="reachable"
+    fi
+
+    docker_reachability_status=""
+    if [[ -n "$first_network_ip" && ( "$first_network_ip" != "$resolved_target_host" || "$allocation_port" != "$resolved_target_port" ) ]]; then
+      docker_reachability_status="failed"
+      if check_backend_reachability "$velocity_server_json" "$first_network_ip" "$allocation_port" "docker-network"; then
+        docker_reachability_status="reachable"
+      fi
+    fi
+
+    report_reachability_summary "$selected_reachability_status" "$docker_reachability_status"
+
+    if [[ "$selected_reachability_status" != "reachable" ]]; then
+      exit 1
+    fi
   fi
 fi
 
