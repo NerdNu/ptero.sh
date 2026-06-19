@@ -13,8 +13,8 @@ Read-only:
   ./ptero users
   ./ptero allocations
   ./ptero servers
-  ./ptero backend [--velocity-name <name>] [--target-mode <allocation|docker>] [--target-host <host>] [--target-port <port>] [--check-reachability] [--update-velocity-config] [--dry-run] <server>
-  ./ptero backend <server>
+  ./ptero endpoint [--velocity-name <name>] [--target-mode <allocation|docker>] [--target-host <host>] [--target-port <port>] [--check-reachability] [--update-velocity-config] [--dry-run] <server>
+  ./ptero endpoint <server>
   ./ptero egg [egg-id]
 
 Write:
@@ -25,12 +25,12 @@ Examples:
   ./ptero ping
   ./ptero allocations
   ./ptero servers
-  ./ptero backend lobby-dev
-  ./ptero backend --velocity-name lobby 10
-  ./ptero backend --target-mode allocation --velocity-name lobby 10
-  ./ptero backend --check-reachability --velocity-name lobby 10
-  ./ptero backend --update-velocity-config --velocity-name lobby 10
-  ./ptero backend --update-velocity-config --dry-run --velocity-name lobby 10
+  ./ptero endpoint lobby-dev
+  ./ptero endpoint --velocity-name lobby 10
+  ./ptero endpoint --target-mode allocation --velocity-name lobby 10
+  ./ptero endpoint --check-reachability --velocity-name lobby 10
+  ./ptero endpoint --update-velocity-config --velocity-name lobby 10
+  ./ptero endpoint --update-velocity-config --dry-run --velocity-name lobby 10
   ./ptero egg 1
   PTERO_DRY_RUN=1 ./ptero create lobby-dev "Lobby Dev" 2
   PTERO_DRY_RUN=1 ./ptero create lobby-dev "Lobby Dev" 2 paper
@@ -76,8 +76,8 @@ case "$command" in
     run_script ptero-servers-list "$@"
     ;;
 
-  backend|backend-show)
-    run_script ptero-backend-show "$@"
+  endpoint|endpoint-show)
+    run_script ptero-endpoint-show "$@"
     ;;
 
   egg|egg-show)
