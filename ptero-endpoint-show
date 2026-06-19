@@ -857,8 +857,14 @@ printf '\nVelocity hint:\n'
 printf '  %s = "%s:%s"\n' "$server_key" "$resolved_target_host" "$resolved_target_port"
 
 if [[ "$check_reachability" == "1" ]]; then
-  velocity_server_json="$(fetch_velocity_server_match)" || exit 1
-  check_backend_reachability "$velocity_server_json" "$resolved_target_host" "$resolved_target_port" || exit 1
+  if [[ "${container_running:-unknown}" != "true" ]]; then
+    printf '\nReachability check:\n'
+    printf '  Skipped: backend container is not running.\n'
+    printf '  Hint:    start the backend once, then rerun ./ptero endpoint --check-reachability %s\n' "$server_query"
+  else
+    velocity_server_json="$(fetch_velocity_server_match)" || exit 1
+    check_backend_reachability "$velocity_server_json" "$resolved_target_host" "$resolved_target_port" || exit 1
+  fi
 fi
 
 if [[ "$update_velocity_config" == "1" ]]; then
