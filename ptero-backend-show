@@ -7,21 +7,33 @@ source "${SCRIPT_DIR}/ptero-common.sh"
 usage() {
   cat <<'USAGE'
 Usage:
-  ./ptero-backend-show [--velocity-name <name>] [--check-reachability] <server>
+  ./ptero-backend-show [--velocity-name <name>] [--target-mode <allocation|docker>] [--target-host <host>] [--target-port <port>] [--check-reachability] [--update-velocity-config] [--dry-run] <server>
 
 Matches <server> against Panel server ID, external ID, UUID, short UUID, or exact name.
 
+By default, the backend target is allocation-first: allocation alias plus port,
+then allocation IP plus port. Docker-network IP is used only in
+`--target-mode docker` or as a final fallback when allocation data is unusable.
+
 If --check-reachability is set, the command tries to test TCP reachability from the
-Velocity container to the backend Docker-network IP and port. It uses
-`PTERO_VELOCITY_SERVER` when set. Otherwise it auto-detects a single Panel server
-whose name or external ID contains "velocity".
+Velocity container to the resolved backend target. It uses `PTERO_VELOCITY_SERVER`
+when set. Otherwise it auto-detects a single Panel server whose name or external
+ID contains "velocity".
+
+If --update-velocity-config is set, the command updates the Velocity server's
+`velocity.toml` `[servers]` entry for the resolved backend target. It writes to
+`$PTERO_VELOCITY_TOML` when set, otherwise to
+`$PTERO_VOLUMES_DIR/<velocity-uuid>/velocity.toml`.
 
 Examples:
   ./ptero-backend-show 10
   ./ptero-backend-show lobby-dev
   ./ptero-backend-show "Lobby Dev"
   ./ptero-backend-show --velocity-name lobby 10
+  ./ptero-backend-show --target-mode allocation --velocity-name lobby 10
   ./ptero-backend-show --check-reachability --velocity-name lobby 10
+  ./ptero-backend-show --update-velocity-config --velocity-name lobby 10
+  ./ptero-backend-show --update-velocity-config --dry-run --velocity-name lobby 10
 USAGE
 }
 
@@ -103,9 +115,94 @@ velocity_hint_from_networks() {
   return 0
 }
 
+print_backend_target() {
+  printf '\nBackend target:\n'
+  printf '  Host:            %s\n' "$resolved_target_host"
+  printf '  Port:            %s\n' "$resolved_target_port"
+  printf '  Source:          %s\n' "$resolved_target_source"
+  printf '  Endpoint:        %s:%s\n' "$resolved_target_host" "$resolved_target_port"
+}
+
+resolve_backend_target() {
+  local allocation_host_candidate="$1"
+  local allocation_ip_candidate="$2"
+  local allocation_port_candidate="$3"
+  local docker_ip_candidate="$4"
+
+  resolved_target_host=""
+  resolved_target_port=""
+  resolved_target_source=""
+
+  if [[ -n "$target_host_override" ]]; then
+    resolved_target_host="$target_host_override"
+    if [[ -n "$target_port_override" ]]; then
+      resolved_target_port="$target_port_override"
+    else
+      resolved_target_port="$allocation_port_candidate"
+    fi
+    resolved_target_source="override"
+    return 0
+  fi
+
+  if [[ -n "$target_port_override" ]]; then
+    resolved_target_port="$target_port_override"
+  else
+    resolved_target_port="$allocation_port_candidate"
+  fi
+
+  if [[ -z "$resolved_target_port" ]]; then
+    printf 'Could not resolve a backend target port for %s.\n' "$server_query" >&2
+    return 1
+  fi
+
+  case "$target_mode" in
+    allocation)
+      if [[ -n "$allocation_host_candidate" ]]; then
+        resolved_target_host="$allocation_host_candidate"
+        resolved_target_source="allocation-alias"
+        return 0
+      fi
+
+      if [[ -n "$allocation_ip_candidate" ]]; then
+        resolved_target_host="$allocation_ip_candidate"
+        resolved_target_source="allocation-ip"
+        return 0
+      fi
+      ;;
+
+    docker)
+      if [[ -n "$docker_ip_candidate" ]]; then
+        resolved_target_host="$docker_ip_candidate"
+        resolved_target_source="docker-ip"
+        return 0
+      fi
+      ;;
+  esac
+
+  if [[ -n "$allocation_ip_candidate" ]]; then
+    resolved_target_host="$allocation_ip_candidate"
+    resolved_target_source="allocation-ip"
+    return 0
+  fi
+
+  if [[ -n "$docker_ip_candidate" ]]; then
+    resolved_target_host="$docker_ip_candidate"
+    resolved_target_source="docker-ip-fallback"
+    return 0
+  fi
+
+  printf 'Could not resolve a backend target for %s.\n' "$server_query" >&2
+  return 1
+}
+
 parse_args() {
   velocity_name=""
+  target_mode="${PTERO_BACKEND_TARGET_MODE:-allocation}"
+  target_host_override="${PTERO_BACKEND_TARGET_HOST:-}"
+  target_port_override="${PTERO_BACKEND_TARGET_PORT:-}"
   check_reachability=0
+  update_velocity_config=0
+  dry_run="${PTERO_DRY_RUN:-0}"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -118,8 +215,45 @@ parse_args() {
         shift 2
         ;;
 
+      --target-mode)
+        [[ $# -ge 2 ]] || {
+          printf 'Missing value for --target-mode\n' >&2
+          exit 1
+        }
+        target_mode="$2"
+        shift 2
+        ;;
+
+      --target-host)
+        [[ $# -ge 2 ]] || {
+          printf 'Missing value for --target-host\n' >&2
+          exit 1
+        }
+        target_host_override="$2"
+        shift 2
+        ;;
+
+      --target-port)
+        [[ $# -ge 2 ]] || {
+          printf 'Missing value for --target-port\n' >&2
+          exit 1
+        }
+        target_port_override="$2"
+        shift 2
+        ;;
+
       --check-reachability)
         check_reachability=1
+        shift
+        ;;
+
+      --update-velocity-config)
+        update_velocity_config=1
+        shift
+        ;;
+
+      --dry-run)
+        dry_run=1
         shift
         ;;
 
@@ -151,6 +285,187 @@ parse_args() {
   }
 
   server_query="$1"
+
+  case "$target_mode" in
+    allocation|docker)
+      ;;
+    *)
+      printf 'Unsupported target mode: %s\n' "$target_mode" >&2
+      exit 1
+      ;;
+  esac
+
+  if [[ -n "$target_port_override" && ! "$target_port_override" =~ ^[0-9]+$ ]]; then
+    printf 'Target port must be numeric: %s\n' "$target_port_override" >&2
+    exit 1
+  fi
+}
+
+validate_server_key() {
+  local key="$1"
+
+  if [[ "$key" =~ ^[A-Za-z0-9_-]+$ ]]; then
+    return 0
+  fi
+
+  printf 'Velocity server key must use only letters, digits, underscores, or hyphens: %s\n' "$key" >&2
+  return 1
+}
+
+resolve_velocity_toml_path() {
+  local velocity_server_json="$1"
+  local velocity_uuid
+
+  if [[ -n "${PTERO_VELOCITY_TOML:-}" ]]; then
+    printf '%s\n' "$PTERO_VELOCITY_TOML"
+    return 0
+  fi
+
+  ptero_require_env PTERO_VOLUMES_DIR
+
+  velocity_uuid="$(printf '%s\n' "$velocity_server_json" | jq -r '.uuid')"
+  printf '%s/%s/velocity.toml\n' "${PTERO_VOLUMES_DIR%/}" "$velocity_uuid"
+}
+
+render_velocity_toml_update() {
+  local source_file="$1"
+  local output_file="$2"
+  local server_key="$3"
+  local endpoint="$4"
+  local desired_line="${server_key} = \"${endpoint}\""
+  local line indent trailing_comment trimmed_line existing_key
+  local in_servers_section=0
+  local section_found=0
+  local entry_found=0
+
+  velocity_update_changed=0
+  velocity_update_action=""
+
+  : > "$output_file"
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" =~ ^[[:space:]]*\[servers\][[:space:]]*$ ]]; then
+      section_found=1
+      in_servers_section=1
+      printf '%s\n' "$line" >> "$output_file"
+      continue
+    fi
+
+    if [[ "$in_servers_section" -eq 1 && "$line" =~ ^[[:space:]]*\[[^]]+\][[:space:]]*$ ]]; then
+      if [[ "$entry_found" -eq 0 ]]; then
+        printf '%s\n' "$desired_line" >> "$output_file"
+        velocity_update_changed=1
+        entry_found=1
+      fi
+
+      in_servers_section=0
+      printf '%s\n' "$line" >> "$output_file"
+      continue
+    fi
+
+    if [[ "$in_servers_section" -eq 1 ]]; then
+      trimmed_line="${line#"${line%%[![:space:]]*}"}"
+
+      if [[ "$trimmed_line" =~ ^([A-Za-z0-9_-]+)[[:space:]]*= ]]; then
+        existing_key="${BASH_REMATCH[1]}"
+        if [[ "$existing_key" == "$server_key" ]]; then
+          indent=""
+          if [[ "$line" =~ ^([[:space:]]*) ]]; then
+            indent="${BASH_REMATCH[1]}"
+          fi
+          trailing_comment=""
+          if [[ "$line" =~ ([[:space:]]+#.*)$ ]]; then
+            trailing_comment="${BASH_REMATCH[1]}"
+          fi
+
+          if [[ "$line" != "${indent}${desired_line}${trailing_comment}" ]]; then
+            velocity_update_changed=1
+          fi
+
+          printf '%s\n' "${indent}${desired_line}${trailing_comment}" >> "$output_file"
+          entry_found=1
+          continue
+        fi
+      fi
+    fi
+
+    printf '%s\n' "$line" >> "$output_file"
+  done < "$source_file"
+
+  if [[ "$section_found" -eq 1 ]]; then
+    if [[ "$entry_found" -eq 0 ]]; then
+      printf '%s\n' "$desired_line" >> "$output_file"
+      velocity_update_changed=1
+      velocity_update_action="added"
+    else
+      velocity_update_action="updated"
+    fi
+  else
+    if [[ -s "$source_file" ]]; then
+      printf '\n' >> "$output_file"
+    fi
+    printf '[servers]\n' >> "$output_file"
+    printf '%s\n' "$desired_line" >> "$output_file"
+    velocity_update_changed=1
+    velocity_update_action="created"
+  fi
+
+  if [[ "$velocity_update_changed" -eq 0 ]]; then
+    velocity_update_action="unchanged"
+  fi
+}
+
+update_velocity_config_file() {
+  local velocity_server_json="$1"
+  local server_key="$2"
+  local target_ip="$3"
+  local target_port="$4"
+  local velocity_toml_path velocity_name_local endpoint
+  local tmp_output
+
+  velocity_name_local="$(printf '%s\n' "$velocity_server_json" | jq -r '.name')"
+  velocity_toml_path="$(resolve_velocity_toml_path "$velocity_server_json")"
+  endpoint="${target_ip}:${target_port}"
+
+  if [[ ! -f "$velocity_toml_path" ]]; then
+    printf '\nVelocity config update:\n'
+    printf '  Velocity server: %s\n' "$velocity_name_local"
+    printf '  Config path:     %s\n' "$velocity_toml_path"
+    printf '  Result:          velocity.toml was not found.\n'
+    printf '  Detail:          set PTERO_VELOCITY_TOML if Velocity stores its config elsewhere.\n'
+    return 1
+  fi
+
+  tmp_output="$(mktemp)"
+  trap 'rm -f "$tmp_output"' RETURN
+  render_velocity_toml_update "$velocity_toml_path" "$tmp_output" "$server_key" "$endpoint"
+
+  printf '\nVelocity config update:\n'
+  printf '  Velocity server: %s\n' "$velocity_name_local"
+  printf '  Config path:     %s\n' "$velocity_toml_path"
+  printf '  Server key:      %s\n' "$server_key"
+  printf '  Target:          %s\n' "$endpoint"
+
+  if [[ "$dry_run" == "1" ]]; then
+    printf '  Result:          dry run, preview only.\n'
+    if [[ "$velocity_update_action" == "unchanged" ]]; then
+      printf '  Detail:          no config change is needed.\n'
+    else
+      printf '  Detail:          would %s the matching [servers] entry.\n' "$velocity_update_action"
+      diff -u "$velocity_toml_path" "$tmp_output" || true
+    fi
+    return 0
+  fi
+
+  if [[ "$velocity_update_action" == "unchanged" ]]; then
+    printf '  Result:          no config change was needed.\n'
+    return 0
+  fi
+
+  mv "$tmp_output" "$velocity_toml_path"
+  trap - RETURN
+  printf '  Result:          %s the matching [servers] entry.\n' "$velocity_update_action"
+  printf '  Note:            restart Velocity for the config change to take effect.\n'
 }
 
 fetch_velocity_server_match() {
@@ -398,6 +713,7 @@ allocation_summary="$(
 )"
 
 allocation_ip="$(printf '%s\n' "$default_allocation" | jq -r '.ip // empty')"
+allocation_alias="$(printf '%s\n' "$default_allocation" | jq -r '.ip_alias // empty')"
 allocation_port="$(printf '%s\n' "$default_allocation" | jq -r '.port // empty')"
 allocation_id="$(printf '%s\n' "$default_allocation" | jq -r '.id // empty')"
 
@@ -410,6 +726,8 @@ if [[ -n "$velocity_name" ]]; then
   server_key="$velocity_name"
 fi
 
+validate_server_key "$server_key" || exit 1
+
 printf 'Panel server:\n'
 printf '  ID:            %s\n' "$server_id"
 printf '  External ID:   %s\n' "$external_id"
@@ -420,8 +738,12 @@ printf '  Allocations:   %s\n' "$allocation_summary"
 
 if [[ -n "$allocation_id" && -n "$allocation_ip" && -n "$allocation_port" ]]; then
   printf '  Default alloc: %s:%s (allocation %s)\n' "$allocation_ip" "$allocation_port" "$allocation_id"
+  if [[ -n "$allocation_alias" ]]; then
+    printf '  Alloc alias:    %s\n' "$allocation_alias"
+  fi
 fi
 
+first_network_ip=""
 if inspect_json="$(docker_inspect_json "$uuid")"; then
   container_name="$(printf '%s\n' "$inspect_json" | jq -r '.[0].Name // empty | ltrimstr("/")')"
   container_state="$(printf '%s\n' "$inspect_json" | jq -r '.[0].State.Status // empty')"
@@ -477,26 +799,17 @@ if inspect_json="$(docker_inspect_json "$uuid")"; then
     printf '  Note:          container is running, but no network IP was reported by Docker inspect.\n'
   fi
 
+  first_network_ip="$(printf '%s\n' "$networks_json" | jq -r 'to_entries | map(.value.ip_address // "") | map(select(length > 0)) | .[0] // empty')"
+
   velocity_hint="$(velocity_hint_from_networks "$server_key" "$networks_json")"
   if [[ -n "$velocity_hint" ]]; then
-    printf '\nVelocity hint:\n'
+    printf '\nDocker-network hint:\n'
     printf '  %s\n' "$velocity_hint"
   else
-    printf '\nVelocity hint:\n'
+    printf '\nDocker-network hint:\n'
     printf '  No Docker-network IP is available yet for %s.\n' "$server_key"
   fi
 
-  if [[ "$check_reachability" == "1" ]]; then
-    first_network_ip="$(printf '%s\n' "$networks_json" | jq -r 'to_entries | map(.value.ip_address // "") | map(select(length > 0)) | .[0] // empty')"
-    if [[ -n "$first_network_ip" && -n "$allocation_port" ]]; then
-      velocity_server_json="$(fetch_velocity_server_match)" || exit 1
-      check_backend_reachability "$velocity_server_json" "$first_network_ip" "$allocation_port" || exit 1
-    else
-      printf '\nReachability check:\n'
-      printf '  Skipped: no Docker-network backend IP is available yet for this server.\n'
-      printf '  Hint:    start the backend once, then rerun ./ptero backend --check-reachability %s\n' "$server_query"
-    fi
-  fi
 else
   printf '\nDocker container:\n'
   printf '  Could not inspect container named %s.\n' "$uuid"
@@ -506,4 +819,28 @@ else
     printf '\nFallback hint:\n'
     printf '  %s = "%s:%s"\n' "$server_key" "$allocation_ip" "$allocation_port"
   fi
+
+fi
+
+allocation_target_host=""
+if [[ -n "$allocation_alias" && "$allocation_alias" != "$allocation_ip" ]]; then
+  allocation_target_host="$allocation_alias"
+fi
+
+resolve_backend_target "$allocation_target_host" "$allocation_ip" "$allocation_port" "$first_network_ip" || exit 1
+print_backend_target
+
+printf '\nVelocity hint:\n'
+printf '  %s = "%s:%s"\n' "$server_key" "$resolved_target_host" "$resolved_target_port"
+
+if [[ "$check_reachability" == "1" ]]; then
+  velocity_server_json="$(fetch_velocity_server_match)" || exit 1
+  check_backend_reachability "$velocity_server_json" "$resolved_target_host" "$resolved_target_port" || exit 1
+fi
+
+if [[ "$update_velocity_config" == "1" ]]; then
+  if [[ -z "${velocity_server_json:-}" ]]; then
+    velocity_server_json="$(fetch_velocity_server_match)" || exit 1
+  fi
+  update_velocity_config_file "$velocity_server_json" "$server_key" "$resolved_target_host" "$resolved_target_port" || exit 1
 fi

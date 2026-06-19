@@ -42,7 +42,26 @@ Next, review `panel-migrator.json` and update server entries as needed.
 ./ptero allocations
 ./ptero servers
 ./ptero egg 1
+./ptero backend --target-mode allocation --velocity-name lobby lobby-dev
+./ptero backend --update-velocity-config --dry-run --velocity-name lobby lobby-dev
 ```
+
+Velocity config updates:
+
+```sh
+./ptero backend --update-velocity-config --velocity-name lobby lobby-dev
+./ptero backend --check-reachability --update-velocity-config --velocity-name lobby lobby-dev
+```
+
+By default this updates `velocity.toml` at
+`$PTERO_VOLUMES_DIR/<velocity-uuid>/velocity.toml`. Override that path with
+`PTERO_VELOCITY_TOML` if the Velocity config lives elsewhere.
+
+Backend target selection defaults to allocation-first:
+
+- allocation alias plus port
+- allocation IP plus port
+- Docker IP only when `--target-mode docker` is selected
 
 Create a server dry run:
 
