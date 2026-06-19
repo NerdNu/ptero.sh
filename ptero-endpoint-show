@@ -7,13 +7,13 @@ source "${SCRIPT_DIR}/ptero-common.sh"
 usage() {
   cat <<'USAGE'
 Usage:
-  ./ptero-endpoint-show [--velocity-name <name>] [--target-mode <allocation|docker>] [--target-host <host>] [--target-port <port>] [--check-reachability] [--update-velocity-config] [--dry-run] <server>
+  ./ptero-endpoint-show [--velocity-name <name>] [--target-host <host>] [--target-port <port>] [--check-reachability] [--update-velocity-config] [--dry-run] <server>
 
 Matches <server> against Panel server ID, external ID, UUID, short UUID, or exact name.
 
-By default, the backend target is allocation-first: allocation alias plus port,
-then allocation IP plus port. Docker-network IP is used only in
-`--target-mode docker` or as a final fallback when allocation data is unusable.
+By default, the backend target is the backend container's Docker-network IP plus
+the allocation port. Use `--target-host` or `--target-port` only to override
+that resolved Docker-backed target explicitly.
 
 If --check-reachability is set, the command tries to test TCP reachability from the
 Velocity container to the resolved backend target. It uses `PTERO_VELOCITY_SERVER`
@@ -30,7 +30,6 @@ Examples:
   ./ptero-endpoint-show lobby-dev
   ./ptero-endpoint-show "Lobby Dev"
   ./ptero-endpoint-show --velocity-name lobby 10
-  ./ptero-endpoint-show --target-mode allocation --velocity-name lobby 10
   ./ptero-endpoint-show --check-reachability --velocity-name lobby 10
   ./ptero-endpoint-show --update-velocity-config --velocity-name lobby 10
   ./ptero-endpoint-show --update-velocity-config --dry-run --velocity-name lobby 10
@@ -170,10 +169,8 @@ print_backend_target() {
 }
 
 resolve_backend_target() {
-  local allocation_host_candidate="$1"
-  local allocation_ip_candidate="$2"
-  local allocation_port_candidate="$3"
-  local docker_ip_candidate="$4"
+  local allocation_port_candidate="$1"
+  local docker_ip_candidate="$2"
 
   resolved_target_host=""
   resolved_target_port=""
@@ -201,49 +198,18 @@ resolve_backend_target() {
     return 1
   fi
 
-  case "$target_mode" in
-    allocation)
-      if [[ -n "$allocation_host_candidate" ]]; then
-        resolved_target_host="$allocation_host_candidate"
-        resolved_target_source="allocation-alias"
-        return 0
-      fi
-
-      if [[ -n "$allocation_ip_candidate" ]]; then
-        resolved_target_host="$allocation_ip_candidate"
-        resolved_target_source="allocation-ip"
-        return 0
-      fi
-      ;;
-
-    docker)
-      if [[ -n "$docker_ip_candidate" ]]; then
-        resolved_target_host="$docker_ip_candidate"
-        resolved_target_source="docker-ip"
-        return 0
-      fi
-      ;;
-  esac
-
-  if [[ -n "$allocation_ip_candidate" ]]; then
-    resolved_target_host="$allocation_ip_candidate"
-    resolved_target_source="allocation-ip"
-    return 0
-  fi
-
   if [[ -n "$docker_ip_candidate" ]]; then
     resolved_target_host="$docker_ip_candidate"
-    resolved_target_source="docker-ip-fallback"
+    resolved_target_source="docker-ip"
     return 0
   fi
 
-  printf 'Could not resolve a backend target for %s.\n' "$server_query" >&2
+  printf 'Could not resolve a Docker-network backend target for %s.\n' "$server_query" >&2
   return 1
 }
 
 parse_args() {
   velocity_name=""
-  target_mode="${PTERO_BACKEND_TARGET_MODE:-allocation}"
   target_host_override="${PTERO_BACKEND_TARGET_HOST:-}"
   target_port_override="${PTERO_BACKEND_TARGET_PORT:-}"
   check_reachability=0
@@ -258,15 +224,6 @@ parse_args() {
           exit 1
         }
         velocity_name="$2"
-        shift 2
-        ;;
-
-      --target-mode)
-        [[ $# -ge 2 ]] || {
-          printf 'Missing value for --target-mode\n' >&2
-          exit 1
-        }
-        target_mode="$2"
         shift 2
         ;;
 
@@ -331,15 +288,6 @@ parse_args() {
   }
 
   server_query="$1"
-
-  case "$target_mode" in
-    allocation|docker)
-      ;;
-    *)
-      printf 'Unsupported target mode: %s\n' "$target_mode" >&2
-      exit 1
-      ;;
-  esac
 
   if [[ -n "$target_port_override" && ! "$target_port_override" =~ ^[0-9]+$ ]]; then
     printf 'Target port must be numeric: %s\n' "$target_port_override" >&2
@@ -689,25 +637,17 @@ fi
 }
 
 report_reachability_summary() {
-  local selected_mode="$1"
-  local selected_status="$2"
-  local docker_status="${3:-}"
+  local selected_status="$1"
 
   printf '\nReachability summary:\n'
   printf '  Selected target: %s\n' "$selected_status"
 
-  if [[ -n "$docker_status" ]]; then
-    printf '  Docker target:   %s\n' "$docker_status"
-  fi
-
-  if [[ "$docker_status" == "reachable" && "$selected_mode" != "docker" ]]; then
-    printf '  Recommendation:  rerun with --target-mode docker for this setup.\n'
-  elif [[ "$selected_status" == "reachable" ]]; then
+  if [[ "$selected_status" == "reachable" ]]; then
     printf '  Recommendation:  current target mode looks usable.\n'
-  elif [[ "$selected_status" == "inconclusive" || "$docker_status" == "inconclusive" ]]; then
+  elif [[ "$selected_status" == "inconclusive" ]]; then
     printf '  Recommendation:  probe result was inconclusive; verify tooling or test manually from Velocity.\n'
   else
-    printf '  Recommendation:  neither tested path was confirmed reachable from Velocity.\n'
+    printf '  Recommendation:  the Docker-network target was not confirmed reachable from Velocity.\n'
   fi
 }
 
@@ -901,19 +841,9 @@ else
   printf '  Could not inspect container named %s.\n' "$uuid"
   printf '  This usually means Docker is unavailable here, sudo is required, or the container does not exist yet.\n'
 
-  if [[ -n "$allocation_ip" && -n "$allocation_port" ]]; then
-    printf '\nFallback hint:\n'
-    printf '  %s = "%s:%s"\n' "$server_key" "$allocation_ip" "$allocation_port"
-  fi
-
 fi
 
-allocation_target_host=""
-if [[ -n "$allocation_alias" && "$allocation_alias" != "$allocation_ip" ]]; then
-  allocation_target_host="$allocation_alias"
-fi
-
-resolve_backend_target "$allocation_target_host" "$allocation_ip" "$allocation_port" "$first_network_ip" || exit 1
+resolve_backend_target "$allocation_port" "$first_network_ip" || exit 1
 print_backend_target
 
 printf '\nVelocity hint:\n'
@@ -934,17 +864,7 @@ if [[ "$check_reachability" == "1" ]]; then
       selected_reachability_status="$last_reachability_status"
     fi
 
-    docker_reachability_status=""
-    if [[ -n "$first_network_ip" && ( "$first_network_ip" != "$resolved_target_host" || "$allocation_port" != "$resolved_target_port" ) ]]; then
-      docker_reachability_status="failed"
-      if check_backend_reachability "$velocity_server_json" "$first_network_ip" "$allocation_port" "docker-network"; then
-        docker_reachability_status="reachable"
-      else
-        docker_reachability_status="$last_reachability_status"
-      fi
-    fi
-
-    report_reachability_summary "$target_mode" "$selected_reachability_status" "$docker_reachability_status"
+    report_reachability_summary "$selected_reachability_status"
 
     if [[ "$selected_reachability_status" != "reachable" ]]; then
       exit 1
