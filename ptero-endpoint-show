@@ -89,6 +89,35 @@ docker_exec_capture() {
   run_docker_command 'Docker exec requires sudo access; requesting it now.' exec "$container" "$@"
 }
 
+docker_exec_capture_with_timeout() {
+  local seconds="$1"
+  local container="$2"
+  shift 2
+  local output
+
+  if command -v docker >/dev/null 2>&1; then
+    if output="$(capture_with_timeout "$seconds" docker exec "$container" "$@" 2>/dev/null)"; then
+      printf '%s\n' "$output"
+      return 0
+    fi
+  fi
+
+  if command -v sudo >/dev/null 2>&1; then
+    if output="$(capture_with_timeout "$seconds" sudo -n docker exec "$container" "$@" 2>/dev/null)"; then
+      printf '%s\n' "$output"
+      return 0
+    fi
+
+    printf '%s\n' 'Docker exec requires sudo access; requesting it now.' >&2
+    if output="$(capture_with_timeout "$seconds" sudo docker exec "$container" "$@" 2>/dev/null)"; then
+      printf '%s\n' "$output"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
 capture_with_timeout() {
   local seconds="$1"
   shift
@@ -590,7 +619,7 @@ check_backend_reachability() {
     return 1
   fi
 
-  probe_result="$(capture_with_timeout 6 docker_exec_capture "$velocity_uuid" sh -lc '
+  probe_result="$(docker_exec_capture_with_timeout 6 "$velocity_uuid" sh -lc '
 if command -v nc >/dev/null 2>&1; then
   if nc -z -w 3 "$1" "$2"; then
     printf "reachable\tnc\n"
