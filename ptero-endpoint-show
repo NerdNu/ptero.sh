@@ -7,7 +7,7 @@ source "${SCRIPT_DIR}/ptero-common.sh"
 usage() {
   cat <<'USAGE'
 Usage:
-  ./ptero-endpoint-show [--velocity-name <name>] [--target-host <host>] [--target-port <port>] [--check-reachability] [--update-velocity-config] [--dry-run] <server>
+  ./ptero-endpoint-show [--velocity-name <name>] [--target-host <host>] [--target-port <port>] [--check-reachability] [--update-velocity-config] <server>
 
 Matches <server> against Panel server ID, external ID, UUID, short UUID, or exact name.
 
@@ -32,7 +32,6 @@ Examples:
   ./ptero-endpoint-show --velocity-name lobby 10
   ./ptero-endpoint-show --check-reachability --velocity-name lobby 10
   ./ptero-endpoint-show --update-velocity-config --velocity-name lobby 10
-  ./ptero-endpoint-show --update-velocity-config --dry-run --velocity-name lobby 10
 USAGE
 }
 
@@ -252,11 +251,6 @@ parse_args() {
 
       --update-velocity-config)
         update_velocity_config=1
-        shift
-        ;;
-
-      --dry-run)
-        dry_run=1
         shift
         ;;
 

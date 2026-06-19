@@ -331,7 +331,11 @@ Find the backend container IP if Velocity is still using container-internal rout
 ./ptero endpoint lobby-dev
 ```
 
-Update `velocity.toml` to point the configured `velocity_backend_key` at the backend container IP and backend port.
+Run the Velocity config update helper to point the configured `velocity_backend_key` at the backend container IP and backend port:
+
+```sh
+./ptero velocity-config-update lobby-dev
+```
 
 Example:
 
