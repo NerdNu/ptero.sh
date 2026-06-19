@@ -660,8 +660,9 @@ fi
 }
 
 report_reachability_summary() {
-  local selected_status="$1"
-  local docker_status="${2:-}"
+  local selected_mode="$1"
+  local selected_status="$2"
+  local docker_status="${3:-}"
 
   printf '\nReachability summary:\n'
   printf '  Selected target: %s\n' "$selected_status"
@@ -670,10 +671,10 @@ report_reachability_summary() {
     printf '  Docker target:   %s\n' "$docker_status"
   fi
 
-  if [[ "$selected_status" == "reachable" ]]; then
-    printf '  Recommendation:  current target mode looks usable.\n'
-  elif [[ "$docker_status" == "reachable" ]]; then
+  if [[ "$docker_status" == "reachable" && "$selected_mode" != "docker" ]]; then
     printf '  Recommendation:  rerun with --target-mode docker for this setup.\n'
+  elif [[ "$selected_status" == "reachable" ]]; then
+    printf '  Recommendation:  current target mode looks usable.\n'
   elif [[ "$selected_status" == "inconclusive" || "$docker_status" == "inconclusive" ]]; then
     printf '  Recommendation:  probe result was inconclusive; verify tooling or test manually from Velocity.\n'
   else
@@ -914,7 +915,7 @@ if [[ "$check_reachability" == "1" ]]; then
       fi
     fi
 
-    report_reachability_summary "$selected_reachability_status" "$docker_reachability_status"
+    report_reachability_summary "$target_mode" "$selected_reachability_status" "$docker_reachability_status"
 
     if [[ "$selected_reachability_status" != "reachable" ]]; then
       exit 1
