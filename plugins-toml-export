@@ -60,6 +60,11 @@ infer_from_filename() {
 }
 
 parse_args() {
+  if [[ $# -eq 1 && ( "$1" == "-h" || "$1" == "--help" ) ]]; then
+    usage
+    exit 0
+  fi
+
   [[ $# -ge 1 && $# -le 2 ]] || {
     usage >&2
     exit 1
