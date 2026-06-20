@@ -404,6 +404,104 @@ set_property() {
   fi
 }
 
+materialize_plugin_jars() {
+  local source="$1"
+  local target_dir="$2"
+  local preview_only="$3"
+  local plugin_dir target_plugins_dir source_jar jar_name resolved_source target_jar
+  local symlink_count=0
+  local -a plugin_jars
+
+  plugin_dir="${source%/}/plugins"
+  [[ -d "$plugin_dir" ]] || return 0
+
+  shopt -s nullglob
+  plugin_jars=("$plugin_dir"/*.jar)
+  shopt -u nullglob
+
+  [[ "${#plugin_jars[@]}" -gt 0 ]] || return 0
+
+  target_plugins_dir="${target_dir%/}/plugins"
+
+  for source_jar in "${plugin_jars[@]}"; do
+    [[ -L "$source_jar" ]] || continue
+    symlink_count=$((symlink_count + 1))
+
+    jar_name="${source_jar##*/}"
+    resolved_source="$(readlink -f "$source_jar" 2>/dev/null || true)"
+
+    [[ -n "$resolved_source" ]] || die "could not resolve plugin jar symlink: $source_jar"
+    [[ -f "$resolved_source" ]] || die "resolved plugin jar is missing: $source_jar -> $resolved_source"
+
+    target_jar="${target_plugins_dir}/${jar_name}"
+
+    if [[ "$preview_only" == "1" ]]; then
+      printf 'Dry run: would replace plugin symlink with jar file: %s -> %s\n' "$jar_name" "$resolved_source"
+      continue
+    fi
+
+    sudo mkdir -p "$target_plugins_dir"
+    sudo rm -f "$target_jar"
+    sudo cp "$resolved_source" "$target_jar"
+  done
+
+  if [[ "$symlink_count" -gt 0 && "$preview_only" != "1" ]]; then
+    printf 'Materialized %s symlinked plugin jar(s) into real files under plugins/.\n' "$symlink_count"
+  fi
+}
+
+print_plugin_nonjar_symlink_audit() {
+  local source="$1"
+  local plugin_dir source_prefix symlink_path link_target resolved_target display_path
+  local -a in_tree_rows external_rows symlink_paths
+
+  plugin_dir="${source%/}/plugins"
+  [[ -d "$plugin_dir" ]] || return 0
+
+  source_prefix="${source%/}/"
+
+  while IFS= read -r symlink_path; do
+    [[ -n "$symlink_path" ]] || continue
+
+    link_target="$(readlink "$symlink_path" 2>/dev/null || true)"
+    resolved_target="$(readlink -f "$symlink_path" 2>/dev/null || true)"
+    display_path="$symlink_path"
+    if [[ "$display_path" == "$source_prefix"* ]]; then
+      display_path="${display_path#"$source_prefix"}"
+    fi
+
+    if [[ "$link_target" == /* ]]; then
+      external_rows+=("${display_path} -> ${link_target}")
+    else
+      if [[ -n "$resolved_target" ]]; then
+        in_tree_rows+=("${display_path} -> ${link_target} [resolves to ${resolved_target}]")
+      else
+        in_tree_rows+=("${display_path} -> ${link_target}")
+      fi
+    fi
+  done < <(find "$plugin_dir" -type l ! -name '*.jar' -print 2>/dev/null)
+
+  if [[ "${#in_tree_rows[@]}" -eq 0 && "${#external_rows[@]}" -eq 0 ]]; then
+    return 0
+  fi
+
+  printf 'Plugin non-jar symlink audit:\n'
+
+  if [[ "${#in_tree_rows[@]}" -gt 0 ]]; then
+    printf '  In-tree symlinks:\n'
+    for symlink_path in "${in_tree_rows[@]}"; do
+      printf '    - %s\n' "$symlink_path"
+    done
+  fi
+
+  if [[ "${#external_rows[@]}" -gt 0 ]]; then
+    printf '  External absolute symlinks:\n'
+    for symlink_path in "${external_rows[@]}"; do
+      printf '    - %s\n' "$symlink_path"
+    done
+  fi
+}
+
 source_java_process_report() {
   local source="$1"
   local source_real cwd pid comm args
@@ -801,6 +899,8 @@ PLAN
       print_skipped_dry_run_privileged_checks "$source" "$uuid"
     fi
 
+    print_plugin_nonjar_symlink_audit "$source"
+
     printf 'Dry run: scanning source and target with rsync --dry-run. No destination files will be changed.\n'
 
     if rsync "${rsync_common_args[@]}" --dry-run --stats --human-readable \
@@ -829,6 +929,8 @@ MSG
       fi
     fi
 
+    materialize_plugin_jars "$source" "$target_dir" 1
+
     printf 'Dry run: would update server.properties, write migration marker, and chown target.\n'
     return 0
   fi
@@ -841,6 +943,8 @@ MSG
   sudo rsync "${rsync_common_args[@]}" --info=progress2 \
     "${source%/}/" \
     "${target_dir%/}/"
+
+  materialize_plugin_jars "$source" "$target_dir" 0
 
   if [[ -f "${target_dir}/server.properties" ]]; then
     printf 'Updating server.properties...\n'
