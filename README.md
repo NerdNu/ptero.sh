@@ -25,8 +25,8 @@ Some important files:
 
 First, review `ptero.env` and set a real `PTERO_APP_API_KEY`.
 
-`ptero.env` defaults write-oriented `ptero` commands to dry-run mode. To live-run,
-unset `PTERO_DRY_RUN` in the shell first.
+Write-oriented `ptero` commands and `panel-migrator` default to preview mode.
+Set `PTERO_LIVE_RUN=1` to allow live writes and real migrations.
 
 I like to put something like this into my `~/.pterorc` file:
 
@@ -45,8 +45,8 @@ Next, review `panel-migrator.json` and update server entries as needed.
 ./ptero allocations
 ./ptero servers
 ./ptero egg 1
-./ptero endpoint --target-mode allocation --velocity-name lobby lobby-dev
-./ptero endpoint --update-velocity-config --dry-run --velocity-name lobby lobby-dev
+./ptero endpoint --velocity-name lobby lobby-dev
+./ptero endpoint --update-velocity-config --velocity-name lobby lobby-dev
 ```
 
 Velocity config updates:
@@ -54,29 +54,30 @@ Velocity config updates:
 ```sh
 ./ptero endpoint --update-velocity-config --velocity-name lobby lobby-dev
 ./ptero endpoint --check-reachability --update-velocity-config --velocity-name lobby lobby-dev
-unset PTERO_DRY_RUN && ./ptero endpoint --update-velocity-config --velocity-name lobby lobby-dev
+PTERO_LIVE_RUN=1 ./ptero endpoint --update-velocity-config --velocity-name lobby lobby-dev
 ```
 
 By default this updates `velocity.toml` at
 `$PTERO_VOLUMES_DIR/<velocity-uuid>/velocity.toml`. Override that path with
 `PTERO_VELOCITY_TOML` if the Velocity config lives elsewhere.
 
-By default `--update-velocity-config` is preview-only because `PTERO_DRY_RUN=1` is
-enabled in `ptero.env`.
+By default `--update-velocity-config` is preview-only. Set `PTERO_LIVE_RUN=1` to
+apply the rendered `velocity.toml` change.
 
 If `--check-reachability` is requested while the backend container is not running,
 the reachability step is skipped automatically.
 
-Backend target selection defaults to allocation-first:
+Backend target selection defaults to the backend container's Docker-network IP plus the allocation port:
 
 - allocation alias plus port
 - allocation IP plus port
-- Docker IP only when `--target-mode docker` is selected
+- Docker-network IP plus port for the resolved backend target
 
-Create a server dry run:
+Create a server preview:
 
 ```sh
-PTERO_DRY_RUN=1 ./ptero create example-server "Example Server" 2
+./ptero create example-server "Example Server" 2
+PTERO_LIVE_RUN=1 ./ptero create example-server "Example Server" 2
 ```
 
 List migration targets:
@@ -85,10 +86,12 @@ List migration targets:
 ./panel-migrator list
 ```
 
-Migration dry run:
+Migration preview:
 
 ```sh
-MIGRATOR_DRY_RUN=1 ./panel-migrator example-server
+./panel-migrator example-server
+MIGRATOR_DRY_RUN_SUDO=1 ./panel-migrator example-server
+PTERO_LIVE_RUN=1 ./panel-migrator example-server
 ```
 
 More detailed workflow notes live in `MIGRATION_PLAN.md`.

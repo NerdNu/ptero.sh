@@ -32,10 +32,11 @@ Examples:
   ./ptero endpoint --update-velocity-config --velocity-name lobby 10
   ./ptero velocity-config-update lobby-dev
   ./ptero egg 1
-  PTERO_DRY_RUN=1 ./ptero create lobby-dev "Lobby Dev" 2
-  PTERO_DRY_RUN=1 ./ptero create lobby-dev "Lobby Dev" 2 paper
+  ./ptero create lobby-dev "Lobby Dev" 2
+  ./ptero create lobby-dev "Lobby Dev" 2 paper
   ./ptero create modded-dev "Modded Dev" 7 fabric
   ./ptero create proxy-dev "Proxy Dev" 53 velocity
+  PTERO_LIVE_RUN=1 ./ptero create lobby-dev "Lobby Dev" 2
 USAGE
 }
 

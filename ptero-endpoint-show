@@ -213,7 +213,11 @@ parse_args() {
   target_port_override="${PTERO_BACKEND_TARGET_PORT:-}"
   check_reachability=0
   update_velocity_config=0
-  dry_run="${PTERO_DRY_RUN:-0}"
+  preview_only=1
+
+  if ptero_is_live_run; then
+    preview_only=0
+  fi
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -434,7 +438,7 @@ update_velocity_config_file() {
   printf '  Server key:      %s\n' "$server_key"
   printf '  Target:          %s\n' "$endpoint"
 
-  if [[ "$dry_run" == "1" ]]; then
+  if [[ "$preview_only" == "1" ]]; then
     printf '  Result:          dry run, preview only.\n'
     if [[ "$velocity_update_action" == "unchanged" ]]; then
       printf '  Detail:          no config change is needed.\n'

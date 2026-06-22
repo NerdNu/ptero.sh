@@ -4,6 +4,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 CONFIG_FILE="${CONFIG_FILE:-${SCRIPT_DIR}/panel-migrator.json}"
 
+is_live_run() {
+  [[ "${PTERO_LIVE_RUN:-0}" == "1" ]]
+}
+
+is_preview_run() {
+  ! is_live_run
+}
+
 die() {
   printf 'Error: %s\n' "$*" >&2
   exit 1
@@ -142,7 +150,7 @@ Usage:
 
 Environment:
   CONFIG_FILE=./panel-migrator.json
-  MIGRATOR_DRY_RUN=1
+  PTERO_LIVE_RUN=1
   MIGRATOR_DRY_RUN_SUDO=1
   MIGRATOR_YES=1
   MIGRATOR_REPLACE_TARGET=1
@@ -374,15 +382,15 @@ create_destination() {
   allocation_id="$(server_required_field "$id" "allocation_id")"
   type="$(server_field "$id" "type" "paper")"
 
-  if [[ "${MIGRATOR_DRY_RUN:-0}" == "1" ]]; then
+  if is_preview_run; then
     printf 'Dry run: would create Panel server: %s / %s / allocation %s / type %s\n' \
       "$id" "$name" "$allocation_id" "$type" >&2
-    PTERO_DRY_RUN=1 "$bin" create "$id" "$name" "$allocation_id" "$type" >&2
+    "$bin" create "$id" "$name" "$allocation_id" "$type" >&2
     printf 'DRY_RUN_NO_UUID\n'
     return 0
   fi
 
-  created_json="$("$bin" create "$id" "$name" "$allocation_id" "$type")"
+  created_json="$(PTERO_LIVE_RUN=1 "$bin" create "$id" "$name" "$allocation_id" "$type")"
   printf '%s\n' "$created_json" >&2
 
   uuid="$(printf '%s\n' "$created_json" | jq -r '.uuid // empty')"
@@ -566,7 +574,7 @@ Skipped checks:
      Would run sudo docker ps and compare container names.
 
 To include those read-only privileged checks in dry-run mode, rerun with:
-  MIGRATOR_DRY_RUN=1 MIGRATOR_DRY_RUN_SUDO=1 ./panel-migrator <identifier>
+  MIGRATOR_DRY_RUN_SUDO=1 ./panel-migrator <identifier>
 MSG
 }
 
@@ -649,7 +657,7 @@ check_nonempty_policy() {
     return 0
   fi
 
-  if [[ "${MIGRATOR_DRY_RUN:-0}" == "1" ]]; then
+  if is_preview_run; then
     printf 'Dry-run warning: target directory is non-empty. Real migration would require MIGRATOR_REPLACE_TARGET=1.\n' >&2
     return 0
   fi
@@ -794,7 +802,7 @@ migrate_server() {
   available_bytes="$(disk_available_bytes "$target_dir")"
   [[ -n "$available_bytes" ]] || die "could not determine available disk space for $target_dir"
 
-  if [[ "${MIGRATOR_DRY_RUN:-0}" == "1" && "${MIGRATOR_DRY_RUN_SUDO:-0}" != "1" ]]; then
+  if is_preview_run && [[ "${MIGRATOR_DRY_RUN_SUDO:-0}" != "1" ]]; then
     estimate_use_sudo=0
   else
     estimate_use_sudo=1
@@ -819,7 +827,7 @@ migrate_server() {
     disk_required_margin_human="unknown"
     disk_available_human="$(format_bytes "$available_bytes")"
 
-    if [[ "${MIGRATOR_DRY_RUN:-0}" == "1" ]]; then
+    if is_preview_run; then
       disk_policy="unknown; rerun with MIGRATOR_DRY_RUN_SUDO=1 for privileged estimate"
     else
       die "could not estimate migration size"
@@ -874,7 +882,7 @@ Migration plan:
 PLAN
 
   if [[ "$disk_policy" == "insufficient" ]]; then
-    if [[ "${MIGRATOR_DRY_RUN:-0}" == "1" ]]; then
+    if is_preview_run; then
       printf 'Dry-run warning: target filesystem does not appear to have enough free space for this migration.\n' >&2
     else
       die "insufficient disk space for migration"
@@ -883,13 +891,13 @@ PLAN
 
   check_nonempty_policy "$target_dir" "$target_count"
 
-  if [[ "${MIGRATOR_DRY_RUN:-0}" == "1" ]]; then
+  if is_preview_run; then
     confirm_dry_run || die "aborted"
   else
     confirm_real_migration || die "aborted"
   fi
 
-  if [[ "${MIGRATOR_DRY_RUN:-0}" == "1" ]]; then
+  if is_preview_run; then
     printf 'Dry run: performing read-only preflight checks and prompts.\n'
 
     if [[ "${MIGRATOR_DRY_RUN_SUDO:-0}" == "1" ]]; then
@@ -916,7 +924,7 @@ This usually means your user cannot read all source files or cannot traverse the
 No files were changed.
 
 If you want a privileged dry-run, run:
-  MIGRATOR_DRY_RUN=1 MIGRATOR_DRY_RUN_SUDO=1 ./panel-migrator <identifier>
+  MIGRATOR_DRY_RUN_SUDO=1 ./panel-migrator <identifier>
 
 MSG
 
