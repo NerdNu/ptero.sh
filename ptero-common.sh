@@ -9,6 +9,10 @@ if [[ -f "${SCRIPT_DIR}/ptero.env" ]]; then
   source "${SCRIPT_DIR}/ptero.env"
 fi
 
+ptero_is_live_run() {
+  [[ "${PTERO_LIVE_RUN:-0}" == "1" ]]
+}
+
 ptero_require_tools() {
   local missing=0
 

@@ -43,8 +43,8 @@ export PTERO_APP_API_KEY="ptla_pterodactyl_user_api_key_with_lots_of_permissions
 export PTERO_OWNER_ID="1"
 # This is the "egg" identifier for Paper: https://panel-vex.nerd.nu/admin/nests/egg/1
 export PTERO_EGG_ID="1"
-# Always do dry-runs by default; to live-run, use: unset PTERO_DRY_RUN
-export PTERO_DRY_RUN=1
+# Preview-only is the default; set this only when intentionally live-running.
+# export PTERO_LIVE_RUN=1
 ```
 
 Useful read-only commands:
@@ -59,25 +59,25 @@ Useful read-only commands:
 ./ptero egg 1
 ```
 
-Server creation dry run:
+Server creation preview:
 
 ```sh
-PTERO_DRY_RUN=1 ./ptero create lobby-dev "Lobby Dev" 2
+./ptero create lobby-dev "Lobby Dev" 2
 ```
 
 Real server creation:
 
 ```sh
-./ptero create lobby-dev "Lobby Dev" 2
+PTERO_LIVE_RUN=1 ./ptero create lobby-dev "Lobby Dev" 2
 ```
 
 Migration inventory and execution tool:
 
 ```sh
 ./panel-migrator list
-MIGRATOR_DRY_RUN=1 ./panel-migrator lobby-dev
-MIGRATOR_DRY_RUN=1 MIGRATOR_DRY_RUN_SUDO=1 ./panel-migrator lobby-dev
 ./panel-migrator lobby-dev
+MIGRATOR_DRY_RUN_SUDO=1 ./panel-migrator lobby-dev
+PTERO_LIVE_RUN=1 ./panel-migrator lobby-dev
 ```
 
 
@@ -176,16 +176,16 @@ If the Panel server exists but the config does not know about it yet:
 
 ### 4. Create the Panel destination
 
-Dry run first:
+Preview first:
 
 ```sh
-PTERO_DRY_RUN=1 ./ptero create lobby-dev "Lobby Dev" 2
+./ptero create lobby-dev "Lobby Dev" 2
 ```
 
 Then create for real:
 
 ```sh
-./ptero create lobby-dev "Lobby Dev" 2
+PTERO_LIVE_RUN=1 ./ptero create lobby-dev "Lobby Dev" 2
 ```
 
 After creation, verify:
@@ -203,13 +203,13 @@ Do not start the server yet.
 Normal dry run:
 
 ```sh
-MIGRATOR_DRY_RUN=1 ./panel-migrator lobby-dev
+./panel-migrator lobby-dev
 ```
 
 If the unprivileged dry run cannot read some source files, run a privileged dry run:
 
 ```sh
-MIGRATOR_DRY_RUN=1 MIGRATOR_DRY_RUN_SUDO=1 ./panel-migrator lobby-dev
+MIGRATOR_DRY_RUN_SUDO=1 ./panel-migrator lobby-dev
 ```
 
 The plan should show:
@@ -227,7 +227,7 @@ If `Disk policy` is insufficient, stop and free space or move the target volume 
 The default disk margin is 110%. To test another margin:
 
 ```sh
-MIGRATOR_DRY_RUN=1 MIGRATOR_DISK_SAFETY_PERCENT=125 ./panel-migrator lobby-dev
+MIGRATOR_DISK_SAFETY_PERCENT=125 ./panel-migrator lobby-dev
 ```
 
 Dry-run mode now walks the same read-only preflight path as a real migration when run with `MIGRATOR_DRY_RUN_SUDO=1`. Without that flag, it skips the privileged source-process, source-activity, and target-container checks, and prints exactly which checks were skipped and how to include them.
@@ -238,7 +238,7 @@ Dry-run mode now walks the same read-only preflight path as a real migration whe
 Run:
 
 ```sh
-./panel-migrator lobby-dev
+PTERO_LIVE_RUN=1 ./panel-migrator lobby-dev
 ```
 
 Type exactly:
@@ -264,8 +264,8 @@ The migrator will:
 Use these overrides only when intentional:
 
 ```sh
-MIGRATOR_REPLACE_TARGET=1 ./panel-migrator lobby-dev
-MIGRATOR_FORCE=1 ./panel-migrator lobby-dev
+PTERO_LIVE_RUN=1 MIGRATOR_REPLACE_TARGET=1 ./panel-migrator lobby-dev
+PTERO_LIVE_RUN=1 MIGRATOR_FORCE=1 ./panel-migrator lobby-dev
 ```
 
 `MIGRATOR_REPLACE_TARGET=1` moves existing target contents aside before migration. It does not merge over them.

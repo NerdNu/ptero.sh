@@ -12,7 +12,8 @@ Usage:
 Example:
   ./ptero-server-create-paper lobby-dev "Lobby Dev" 2
 
-Set PTERO_DRY_RUN=1 to print the payload without creating the server.
+By default this prints the create payload without creating the server.
+Set PTERO_LIVE_RUN=1 to create the server for real.
 USAGE
 }
 
@@ -92,7 +93,7 @@ payload="$(
     }'
 )"
 
-if [[ "${PTERO_DRY_RUN:-0}" == "1" ]]; then
+if ! ptero_is_live_run; then
   printf '%s\n' "$payload" | jq .
   exit 0
 fi
