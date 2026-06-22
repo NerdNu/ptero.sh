@@ -15,6 +15,7 @@ Read-only:
   ./ptero servers
   ./ptero endpoint [--velocity-name <name>] [--target-host <host>] [--target-port <port>] [--check-reachability] [--update-velocity-config] <server>
   ./ptero endpoint <server>
+  ./ptero forwarding-check <server>
   ./ptero egg [egg-id]
 
 Write:
@@ -30,6 +31,7 @@ Examples:
   ./ptero endpoint --velocity-name lobby 10
   ./ptero endpoint --check-reachability --velocity-name lobby 10
   ./ptero endpoint --update-velocity-config --velocity-name lobby 10
+  ./ptero forwarding-check lobby-dev
   ./ptero velocity-config-update lobby-dev
   ./ptero egg 1
   ./ptero create lobby-dev "Lobby Dev" 2
@@ -79,6 +81,10 @@ case "$command" in
 
   endpoint|endpoint-show)
     run_script ptero-endpoint-show "$@"
+    ;;
+
+  forwarding-check|forwarding)
+    run_script ptero-forwarding-check "$@"
     ;;
 
   egg|egg-show)

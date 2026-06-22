@@ -269,6 +269,34 @@ ptero_velocity_forwarding_mode() {
   printf '%s\n' "$mode"
 }
 
+ptero_velocity_online_mode() {
+  local velocity_server_json="$1"
+  local velocity_toml_path mode
+
+  velocity_toml_path="$(ptero_velocity_toml_path "$velocity_server_json")"
+  [[ -f "$velocity_toml_path" ]] || {
+    printf 'Velocity config file not found: %s\n' "$velocity_toml_path" >&2
+    return 1
+  }
+
+  mode="$(
+    jq -nr --rawfile toml "$velocity_toml_path" '
+      $toml
+      | split("\n")
+      | map(capture("^[[:space:]]*online-mode[[:space:]]*=[[:space:]]*(?<mode>true|false)")?.mode)
+      | map(select(. != null))
+      | .[0] // empty
+    '
+  )"
+
+  [[ -n "$mode" ]] || {
+    printf 'Velocity online-mode not found in %s\n' "$velocity_toml_path" >&2
+    return 1
+  }
+
+  printf '%s\n' "$mode"
+}
+
 ptero_velocity_forwarding_secret() {
   local velocity_server_json="$1"
   local secret_path secret
@@ -288,4 +316,178 @@ ptero_velocity_forwarding_secret() {
   }
 
   printf '%s\n' "$secret"
+}
+
+ptero_server_volume_dir() {
+  local server_json="$1"
+  local server_uuid
+
+  ptero_require_env PTERO_VOLUMES_DIR
+
+  server_uuid="$(printf '%s\n' "$server_json" | jq -r '.uuid')"
+  printf '%s/%s\n' "${PTERO_VOLUMES_DIR%/}" "$server_uuid"
+}
+
+ptero_yaml_trim_value() {
+  local value="$1"
+
+  value="${value%%#*}"
+  value="${value#${value%%[![:space:]]*}}"
+  value="${value%${value##*[![:space:]]}}"
+
+  if [[ "$value" == '"'*'"' && "$value" == *'"' ]]; then
+    value="${value:1:${#value}-2}"
+  elif [[ "$value" == "'"*"'" && "$value" == *"'" ]]; then
+    value="${value:1:${#value}-2}"
+  fi
+
+  printf '%s\n' "$value"
+}
+
+ptero_read_backend_forwarding_config() {
+  local server_json="$1"
+  local volume_dir paper_global paper_yml spigot_yml line value
+  local in_proxies=0 in_velocity=0 in_settings=0 in_velocity_support=0 in_spigot_settings=0
+
+  ptero_backend_forwarding_mode=""
+  ptero_backend_forwarding_secret=""
+  ptero_backend_forwarding_online_mode=""
+  ptero_backend_forwarding_config_path=""
+  ptero_backend_forwarding_format=""
+  ptero_backend_bungeecord_enabled=""
+
+  volume_dir="$(ptero_server_volume_dir "$server_json")"
+  paper_global="${volume_dir}/config/paper-global.yml"
+  paper_yml="${volume_dir}/paper.yml"
+  spigot_yml="${volume_dir}/spigot.yml"
+
+  if [[ -f "$paper_global" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      case "$line" in
+        proxies:)
+          in_proxies=1
+          in_velocity=0
+          ;;
+        '  '*)
+          if [[ "$in_proxies" == "1" && "$line" == '  velocity:' ]]; then
+            in_velocity=1
+          elif [[ "$in_velocity" == "1" && "$line" == '  '* && "$line" != '    '* ]]; then
+            in_velocity=0
+          fi
+          ;;
+        *)
+          if [[ "$line" != '    '* ]]; then
+            in_velocity=0
+          fi
+          if [[ "$line" != '  '* ]]; then
+            in_proxies=0
+          fi
+          ;;
+      esac
+
+      if [[ "$in_velocity" == "1" ]]; then
+        case "$line" in
+          '    enabled:'*)
+            value="${line#'    enabled:'}"
+            value="$(ptero_yaml_trim_value "$value")"
+            if [[ "$value" == "true" ]]; then
+              ptero_backend_forwarding_mode="modern"
+            fi
+            ;;
+          '    secret:'*)
+            value="${line#'    secret:'}"
+            ptero_backend_forwarding_secret="$(ptero_yaml_trim_value "$value")"
+            ;;
+          '    online-mode:'*)
+            value="${line#'    online-mode:'}"
+            ptero_backend_forwarding_online_mode="$(ptero_yaml_trim_value "$value")"
+            ;;
+        esac
+      fi
+    done < "$paper_global"
+
+    if [[ -n "$ptero_backend_forwarding_mode" || -n "$ptero_backend_forwarding_secret" || -n "$ptero_backend_forwarding_online_mode" ]]; then
+      ptero_backend_forwarding_config_path="$paper_global"
+      ptero_backend_forwarding_format="paper-global"
+    fi
+  fi
+
+  if [[ -z "$ptero_backend_forwarding_config_path" && -f "$paper_yml" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      case "$line" in
+        settings:)
+          in_settings=1
+          in_velocity_support=0
+          ;;
+        '  '*)
+          if [[ "$in_settings" == "1" && "$line" == '  velocity-support:' ]]; then
+            in_velocity_support=1
+          elif [[ "$in_velocity_support" == "1" && "$line" == '  '* && "$line" != '    '* ]]; then
+            in_velocity_support=0
+          fi
+          ;;
+        *)
+          if [[ "$line" != '    '* ]]; then
+            in_velocity_support=0
+          fi
+          if [[ "$line" != '  '* ]]; then
+            in_settings=0
+          fi
+          ;;
+      esac
+
+      if [[ "$in_velocity_support" == "1" ]]; then
+        case "$line" in
+          '    enabled:'*)
+            value="${line#'    enabled:'}"
+            value="$(ptero_yaml_trim_value "$value")"
+            if [[ "$value" == "true" ]]; then
+              ptero_backend_forwarding_mode="modern"
+            fi
+            ;;
+          '    secret:'*)
+            value="${line#'    secret:'}"
+            ptero_backend_forwarding_secret="$(ptero_yaml_trim_value "$value")"
+            ;;
+          '    online-mode:'*)
+            value="${line#'    online-mode:'}"
+            ptero_backend_forwarding_online_mode="$(ptero_yaml_trim_value "$value")"
+            ;;
+        esac
+      fi
+    done < "$paper_yml"
+
+    if [[ -n "$ptero_backend_forwarding_mode" || -n "$ptero_backend_forwarding_secret" || -n "$ptero_backend_forwarding_online_mode" ]]; then
+      ptero_backend_forwarding_config_path="$paper_yml"
+      ptero_backend_forwarding_format="paper-yml"
+    fi
+  fi
+
+  if [[ -f "$spigot_yml" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      case "$line" in
+        settings:)
+          in_spigot_settings=1
+          ;;
+        '  '*)
+          ;;
+        *)
+          if [[ "$line" != '  '* ]]; then
+            in_spigot_settings=0
+          fi
+          ;;
+      esac
+
+      if [[ "$in_spigot_settings" == "1" && "$line" == '  bungeecord:'* ]]; then
+        value="${line#'  bungeecord:'}"
+        ptero_backend_bungeecord_enabled="$(ptero_yaml_trim_value "$value")"
+      fi
+    done < "$spigot_yml"
+
+    if [[ -z "$ptero_backend_forwarding_mode" && "$ptero_backend_bungeecord_enabled" == "true" ]]; then
+      ptero_backend_forwarding_mode="legacy"
+      ptero_backend_forwarding_config_path="$spigot_yml"
+      ptero_backend_forwarding_format="spigot-yml"
+    fi
+  fi
 }

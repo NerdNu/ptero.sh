@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+source "${SCRIPT_DIR}/ptero-common.sh"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  ./ptero-forwarding-check <server>
+
+Checks whether Velocity's forwarding mode and secret match the backend Paper config.
+Matches <server> against Panel server ID, external ID, UUID, short UUID, or exact name.
+
+Examples:
+  ./ptero-forwarding-check lobby-dev
+  ./ptero-forwarding-check 10
+USAGE
+}
+
+die() {
+  printf 'Error: %s\n' "$*" >&2
+  exit 1
+}
+
+print_value_or_missing() {
+  local value="$1"
+
+  if [[ -n "$value" ]]; then
+    printf '%s\n' "$value"
+  else
+    printf 'missing\n'
+  fi
+}
+
+main() {
+  local backend_query backend_server_json velocity_server_json
+  local backend_name backend_uuid velocity_name velocity_uuid backend_volume_dir
+  local velocity_mode velocity_online_mode velocity_secret velocity_toml velocity_secret_path
+  local issues=()
+
+  if [[ $# -ne 1 ]]; then
+    usage >&2
+    exit 1
+  fi
+
+  backend_query="$1"
+
+  ptero_require_tools
+
+  backend_server_json="$(ptero_fetch_server_by_query "$backend_query")" || die "No Panel server matched: $backend_query"
+  velocity_server_json="$(ptero_fetch_velocity_server_json)" || exit 1
+
+  backend_name="$(printf '%s\n' "$backend_server_json" | jq -r '.name')"
+  backend_uuid="$(printf '%s\n' "$backend_server_json" | jq -r '.uuid')"
+  velocity_name="$(printf '%s\n' "$velocity_server_json" | jq -r '.name')"
+  velocity_uuid="$(printf '%s\n' "$velocity_server_json" | jq -r '.uuid')"
+  backend_volume_dir="$(ptero_server_volume_dir "$backend_server_json")"
+  velocity_toml="$(ptero_velocity_toml_path "$velocity_server_json")"
+  velocity_secret_path="$(ptero_velocity_secret_path "$velocity_server_json")"
+
+  velocity_mode="$(ptero_velocity_forwarding_mode "$velocity_server_json")" || exit 1
+  velocity_online_mode="$(ptero_velocity_online_mode "$velocity_server_json")" || exit 1
+  velocity_secret="$(ptero_velocity_forwarding_secret "$velocity_server_json")" || exit 1
+
+  ptero_read_backend_forwarding_config "$backend_server_json"
+
+  printf 'Velocity:\n'
+  printf '  Server:          %s\n' "$velocity_name"
+  printf '  UUID:            %s\n' "$velocity_uuid"
+  printf '  Config:          %s\n' "$velocity_toml"
+  printf '  Mode:            %s\n' "$velocity_mode"
+  printf '  Online mode:     %s\n' "$velocity_online_mode"
+  printf '  Secret file:     %s\n' "$velocity_secret_path"
+  printf '  Secret:          present\n'
+
+  printf '\nBackend:\n'
+  printf '  Server:          %s\n' "$backend_name"
+  printf '  UUID:            %s\n' "$backend_uuid"
+  printf '  Volume:          %s\n' "$backend_volume_dir"
+  printf '  Config:          %s\n' "$(print_value_or_missing "$ptero_backend_forwarding_config_path")"
+  printf '  Format:          %s\n' "$(print_value_or_missing "$ptero_backend_forwarding_format")"
+  printf '  Mode:            %s\n' "$(print_value_or_missing "$ptero_backend_forwarding_mode")"
+  printf '  Online mode:     %s\n' "$(print_value_or_missing "$ptero_backend_forwarding_online_mode")"
+  printf '  Secret:          %s\n' "$(if [[ -n "$ptero_backend_forwarding_secret" ]]; then printf 'present'; else printf 'missing'; fi)"
+  if [[ -n "$ptero_backend_bungeecord_enabled" ]]; then
+    printf '  Bungeecord:      %s\n' "$ptero_backend_bungeecord_enabled"
+  fi
+
+  if [[ -z "$ptero_backend_forwarding_mode" ]]; then
+    issues+=("backend forwarding mode could not be determined from Paper or Spigot config")
+  elif [[ "$ptero_backend_forwarding_mode" != "$velocity_mode" ]]; then
+    issues+=("forwarding mode mismatch: Velocity=${velocity_mode}, backend=${ptero_backend_forwarding_mode}")
+  fi
+
+  if [[ "$velocity_mode" == "modern" ]]; then
+    if [[ -z "$ptero_backend_forwarding_secret" ]]; then
+      issues+=("backend Velocity secret is missing from Paper config")
+    elif [[ "$ptero_backend_forwarding_secret" != "$velocity_secret" ]]; then
+      issues+=("forwarding secret mismatch between Velocity and backend Paper config")
+    fi
+
+    if [[ -z "$ptero_backend_forwarding_online_mode" ]]; then
+      issues+=("backend Velocity online-mode could not be read from Paper config")
+    elif [[ "$ptero_backend_forwarding_online_mode" != "$velocity_online_mode" ]]; then
+      issues+=("online-mode mismatch: Velocity=${velocity_online_mode}, backend=${ptero_backend_forwarding_online_mode}")
+    fi
+
+    if [[ "$ptero_backend_bungeecord_enabled" == "true" ]]; then
+      issues+=("backend still has spigot bungeecord forwarding enabled while Velocity modern forwarding is configured")
+    fi
+  fi
+
+  printf '\nResult:\n'
+  if [[ "${#issues[@]}" -eq 0 ]]; then
+    printf '  OK: Velocity and backend forwarding settings are consistent.\n'
+    exit 0
+  fi
+
+  for issue in "${issues[@]}"; do
+    printf '  Mismatch: %s\n' "$issue"
+  done
+  exit 1
+}
+
+case "${1:-}" in
+  -h|--help)
+    usage
+    exit 0
+    ;;
+esac
+
+main "$@"
