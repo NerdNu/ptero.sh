@@ -304,21 +304,6 @@ validate_server_key() {
   return 1
 }
 
-resolve_velocity_toml_path() {
-  local velocity_server_json="$1"
-  local velocity_uuid
-
-  if [[ -n "${PTERO_VELOCITY_TOML:-}" ]]; then
-    printf '%s\n' "$PTERO_VELOCITY_TOML"
-    return 0
-  fi
-
-  ptero_require_env PTERO_VOLUMES_DIR
-
-  velocity_uuid="$(printf '%s\n' "$velocity_server_json" | jq -r '.uuid')"
-  printf '%s/%s/velocity.toml\n' "${PTERO_VOLUMES_DIR%/}" "$velocity_uuid"
-}
-
 render_velocity_toml_update() {
   local source_file="$1"
   local output_file="$2"
@@ -416,7 +401,7 @@ update_velocity_config_file() {
   local tmp_output
 
   velocity_name_local="$(printf '%s\n' "$velocity_server_json" | jq -r '.name')"
-  velocity_toml_path="$(resolve_velocity_toml_path "$velocity_server_json")"
+  velocity_toml_path="$(ptero_velocity_toml_path "$velocity_server_json")"
   endpoint="${target_ip}:${target_port}"
 
   if [[ ! -f "$velocity_toml_path" ]]; then
@@ -458,78 +443,6 @@ update_velocity_config_file() {
   trap - RETURN
   printf '  Result:          %s the matching [servers] entry.\n' "$velocity_update_action"
   printf '  Note:            restart Velocity for the config change to take effect.\n'
-}
-
-fetch_velocity_server_match() {
-  local page=1
-  local response total_pages matches_count matched
-
-  if [[ -n "${PTERO_VELOCITY_SERVER:-}" ]]; then
-    fetch_server_match "$PTERO_VELOCITY_SERVER"
-    return $?
-  fi
-
-  while :; do
-    response="$(ptero_api GET "/api/application/servers?include=allocations&per_page=100&page=${page}")"
-
-    matched="$(
-      printf '%s\n' "$response" \
-        | jq -cs '
-            map(
-              .data[]
-              | .attributes as $s
-              | select(
-                  (($s.external_id // "") | ascii_downcase | contains("velocity"))
-                  or ($s.name | ascii_downcase | contains("velocity"))
-                )
-              | {
-                  id: $s.id,
-                  external_id: ($s.external_id // "-"),
-                  uuid: $s.uuid,
-                  identifier: (($s.uuid | split("-"))[0]),
-                  name: $s.name,
-                  allocations: (
-                    $s.relationships.allocations.data // []
-                    | map({
-                        id: .attributes.id,
-                        ip: .attributes.ip,
-                        ip_alias: (.attributes.ip_alias // ""),
-                        port: .attributes.port,
-                        is_default: (.attributes.is_default // false)
-                      })
-                  )
-                }
-            )
-            | add
-          '
-    )"
-
-    if [[ -n "$matched" && "$matched" != "null" ]]; then
-      matches+=("$matched")
-    fi
-
-    total_pages="$(printf '%s\n' "$response" | jq -r '.meta.pagination.total_pages // 1')"
-    if [[ "$page" -ge "$total_pages" ]]; then
-      break
-    fi
-
-    page=$((page + 1))
-  done
-
-  matches_count="${#matches[@]}"
-  if [[ "$matches_count" -eq 1 ]]; then
-    printf '%s\n' "${matches[0]}"
-    return 0
-  fi
-
-  if [[ "$matches_count" -eq 0 ]]; then
-    printf 'Could not auto-detect a Velocity Panel server. Set PTERO_VELOCITY_SERVER to a server ID, external ID, UUID, or exact name.\n' >&2
-  else
-    printf 'Auto-detected multiple Velocity-like Panel servers. Set PTERO_VELOCITY_SERVER to the intended server.\n' >&2
-    printf '%s\n' "${matches[@]}" | jq -r '"  - ID \(.id): \(.name) [\(.external_id)]"' >&2
-  fi
-
-  return 1
 }
 
 check_backend_reachability() {
@@ -649,66 +562,10 @@ report_reachability_summary() {
   fi
 }
 
-fetch_server_match() {
-  local query="$1"
-  local page=1
-  local response total_pages matched
-
-  while :; do
-    response="$(ptero_api GET "/api/application/servers?include=allocations&per_page=100&page=${page}")"
-
-    matched="$(
-      printf '%s\n' "$response" \
-        | jq -c --arg query "$query" '
-            .data[]
-            | .attributes as $s
-            | select(
-                ($s.id | tostring) == $query
-                or ($s.external_id // "") == $query
-                or $s.uuid == $query
-                or (($s.uuid | split("-"))[0]) == $query
-                or $s.name == $query
-              )
-            | {
-                id: $s.id,
-                external_id: ($s.external_id // "-"),
-                uuid: $s.uuid,
-                identifier: (($s.uuid | split("-"))[0]),
-                name: $s.name,
-                allocations: (
-                  $s.relationships.allocations.data // []
-                  | map({
-                      id: .attributes.id,
-                      ip: .attributes.ip,
-                      ip_alias: (.attributes.ip_alias // ""),
-                      port: .attributes.port,
-                      is_default: (.attributes.is_default // false)
-                    })
-                )
-              }
-          '
-    )"
-
-    if [[ -n "$matched" ]]; then
-      printf '%s\n' "$matched"
-      return 0
-    fi
-
-    total_pages="$(printf '%s\n' "$response" | jq -r '.meta.pagination.total_pages // 1')"
-    if [[ "$page" -ge "$total_pages" ]]; then
-      break
-    fi
-
-    page=$((page + 1))
-  done
-
-  return 1
-}
-
 require_tools
 parse_args "$@"
 matches=()
-server_json="$(fetch_server_match "$server_query")" || {
+server_json="$(ptero_fetch_server_by_query "$server_query")" || {
   printf 'No Panel server matched: %s\n' "$server_query" >&2
   exit 1
 }
@@ -853,7 +710,7 @@ if [[ "$check_reachability" == "1" ]]; then
     printf '  Skipped: backend container is not running.\n'
     printf '  Hint:    start the backend once, then rerun ./ptero endpoint --check-reachability %s\n' "$server_query"
   else
-    velocity_server_json="$(fetch_velocity_server_match)" || exit 1
+    velocity_server_json="$(ptero_fetch_velocity_server_json)" || exit 1
 
     selected_reachability_status="failed"
     if check_backend_reachability "$velocity_server_json" "$resolved_target_host" "$resolved_target_port" "selected"; then
@@ -872,7 +729,7 @@ fi
 
 if [[ "$update_velocity_config" == "1" ]]; then
   if [[ -z "${velocity_server_json:-}" ]]; then
-    velocity_server_json="$(fetch_velocity_server_match)" || exit 1
+    velocity_server_json="$(ptero_fetch_velocity_server_json)" || exit 1
   fi
   update_velocity_config_file "$velocity_server_json" "$server_key" "$resolved_target_host" "$resolved_target_port" || exit 1
 fi
