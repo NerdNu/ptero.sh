@@ -255,7 +255,7 @@ ptero_velocity_forwarding_mode() {
     jq -nr --rawfile toml "$velocity_toml_path" '
       $toml
       | split("\n")
-      | map(capture("^[[:space:]]*player-info-forwarding-mode[[:space:]]*=[[:space:]]*\"(?<mode>[^\"]+)\"")?.mode)
+      | map(try capture("^[[:space:]]*player-info-forwarding-mode[[:space:]]*=[[:space:]]*\"(?<mode>[^\"]+)\"").mode catch empty)
       | map(select(. != null))
       | .[0] // empty
     '
@@ -283,7 +283,7 @@ ptero_velocity_online_mode() {
     jq -nr --rawfile toml "$velocity_toml_path" '
       $toml
       | split("\n")
-      | map(capture("^[[:space:]]*online-mode[[:space:]]*=[[:space:]]*(?<mode>true|false)")?.mode)
+      | map(try capture("^[[:space:]]*online-mode[[:space:]]*=[[:space:]]*(?<mode>true|false)").mode catch empty)
       | map(select(. != null))
       | .[0] // empty
     '
