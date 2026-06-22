@@ -44,6 +44,7 @@ Next, review `panel-migrator.json` and update server entries as needed.
 ./ptero users
 ./ptero allocations
 ./ptero servers
+./ptero forwarding-check lobby-dev
 ./ptero egg 1
 ./ptero endpoint --velocity-name lobby lobby-dev
 ./ptero endpoint --update-velocity-config --velocity-name lobby lobby-dev
