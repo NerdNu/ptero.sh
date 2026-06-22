@@ -203,7 +203,37 @@ resolve_backend_target() {
     return 0
   fi
 
-  printf 'Could not resolve a Docker-network backend target for %s.\n' "$server_query" >&2
+  resolved_target_source="pending-docker-ip"
+  return 2
+}
+
+print_pending_backend_target() {
+  printf '\nBackend target:\n'
+  printf '  Host:            pending\n'
+  printf '  Port:            %s\n' "$resolved_target_port"
+  printf '  Source:          %s\n' "$resolved_target_source"
+  printf '  Detail:          start the backend once so Docker assigns a network IP.\n'
+}
+
+report_pending_velocity_config_update() {
+  local velocity_server_json="$1"
+  local server_key="$2"
+  local velocity_toml_path velocity_name_local
+
+  velocity_name_local="$(printf '%s\n' "$velocity_server_json" | jq -r '.name')"
+  velocity_toml_path="$(ptero_velocity_toml_path "$velocity_server_json")"
+
+  printf '\nVelocity config update:\n'
+  printf '  Velocity server: %s\n' "$velocity_name_local"
+  printf '  Config path:     %s\n' "$velocity_toml_path"
+  printf '  Server key:      %s\n' "$server_key"
+  printf '  Result:          pending backend Docker IP.\n'
+  printf '  Detail:          start the backend once, then rerun this command.\n'
+
+  if [[ "$preview_only" == "1" ]]; then
+    return 0
+  fi
+
   return 1
 }
 
@@ -625,6 +655,7 @@ if [[ -n "$allocation_id" && -n "$allocation_ip" && -n "$allocation_port" ]]; th
 fi
 
 first_network_ip=""
+backend_target_pending=0
 if inspect_json="$(docker_inspect_json "$uuid")"; then
   container_name="$(printf '%s\n' "$inspect_json" | jq -r '.[0].Name // empty | ltrimstr("/")')"
   container_state="$(printf '%s\n' "$inspect_json" | jq -r '.[0].State.Status // empty')"
@@ -698,14 +729,30 @@ else
 
 fi
 
-resolve_backend_target "$allocation_port" "$first_network_ip" || exit 1
-print_backend_target
+if resolve_backend_target "$allocation_port" "$first_network_ip"; then
+  print_backend_target
 
-printf '\nVelocity hint:\n'
-printf '  %s = "%s:%s"\n' "$server_key" "$resolved_target_host" "$resolved_target_port"
+  printf '\nVelocity hint:\n'
+  printf '  %s = "%s:%s"\n' "$server_key" "$resolved_target_host" "$resolved_target_port"
+else
+  resolve_status=$?
+  if [[ "$resolve_status" -ne 2 ]]; then
+    exit "$resolve_status"
+  fi
+
+  backend_target_pending=1
+  print_pending_backend_target
+
+  printf '\nVelocity hint:\n'
+  printf '  Pending: backend has not started yet, so no Docker-network endpoint is available for %s.\n' "$server_key"
+fi
 
 if [[ "$check_reachability" == "1" ]]; then
-  if [[ "${container_running:-unknown}" != "true" ]]; then
+  if [[ "$backend_target_pending" == "1" ]]; then
+    printf '\nReachability check:\n'
+    printf '  Skipped: backend target is pending until the container has started once.\n'
+    printf '  Hint:    start the backend once, then rerun ./ptero endpoint --check-reachability %s\n' "$server_query"
+  elif [[ "${container_running:-unknown}" != "true" ]]; then
     printf '\nReachability check:\n'
     printf '  Skipped: backend container is not running.\n'
     printf '  Hint:    start the backend once, then rerun ./ptero endpoint --check-reachability %s\n' "$server_query"
@@ -731,5 +778,13 @@ if [[ "$update_velocity_config" == "1" ]]; then
   if [[ -z "${velocity_server_json:-}" ]]; then
     velocity_server_json="$(ptero_fetch_velocity_server_json)" || exit 1
   fi
-  update_velocity_config_file "$velocity_server_json" "$server_key" "$resolved_target_host" "$resolved_target_port" || exit 1
+  if [[ "$backend_target_pending" == "1" ]]; then
+    report_pending_velocity_config_update "$velocity_server_json" "$server_key" || exit 1
+  else
+    update_velocity_config_file "$velocity_server_json" "$server_key" "$resolved_target_host" "$resolved_target_port" || exit 1
+  fi
+fi
+
+if [[ "$backend_target_pending" == "1" && "$preview_only" != "1" && ( "$check_reachability" == "1" || "$update_velocity_config" == "1" ) ]]; then
+  exit 1
 fi
