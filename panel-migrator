@@ -246,7 +246,7 @@ estimate_transfer_bytes() {
 
   if [[ "$use_sudo" == "1" ]]; then
     output="$(
-      sudo rsync "${rsync_common_args[@]}" --dry-run --stats --bytes \
+      sudo rsync "${rsync_common_args[@]}" --dry-run --stats \
         "${source%/}/" \
         "${target_dir%/}/" 2>&1
     )" || {
@@ -255,7 +255,7 @@ estimate_transfer_bytes() {
     }
   else
     output="$(
-      rsync "${rsync_common_args[@]}" --dry-run --stats --bytes \
+      rsync "${rsync_common_args[@]}" --dry-run --stats \
         "${source%/}/" \
         "${target_dir%/}/" 2>&1
     )" || {
