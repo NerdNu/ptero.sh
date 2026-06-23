@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  ./migration-config-scan [--hostname <value>] [--port <value>] [--path <value>] <server-dir>
+
+Scans likely config files under <server-dir> for migration leftovers such as:
+- old absolute paths
+- host or address settings
+- port settings
+- exact hostname, port, or path values you want to probe for
+
+Examples:
+  ./migration-config-scan /servers/lobby-dev
+  ./migration-config-scan --hostname vex.nerd.nu --port 25565 /servers/lobby-dev
+  ./migration-config-scan --path /home/minecraft/manage/plugins /servers/lobby-dev
+USAGE
+}
+
+die() {
+  printf 'Error: %s\n' "$*" >&2
+  exit 1
+}
+
+require_tools() {
+  local missing=0
+
+  for tool in find grep sed; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      printf 'Missing required command: %s\n' "$tool" >&2
+      missing=1
+    fi
+  done
+
+  [[ "$missing" -eq 0 ]] || exit 1
+}
+
+escape_ere() {
+  printf '%s\n' "$1" | sed 's/[][(){}.^$*+?|\\-]/\\&/g'
+}
+
+collect_scan_files() {
+  local root="$1"
+
+  mapfile -d '' -t scan_files < <(
+    find "$root" \
+      \( -path '*/.git/*' \
+         -o -path '*/logs/*' \
+         -o -path '*/cache/*' \
+         -o -path '*/crash-reports/*' \
+         -o -path '*/world/*' \
+         -o -path '*/world_nether/*' \
+         -o -path '*/world_the_end/*' \
+         -o -path '*/plugins/*/web/*' \
+         -o -path '*/plugins/*/tiles/*' \
+      \) -prune -o \
+      -type f \
+      \( -name '*.yml' \
+         -o -name '*.yaml' \
+         -o -name '*.toml' \
+         -o -name '*.conf' \
+         -o -name '*.cfg' \
+         -o -name '*.cnf' \
+         -o -name '*.ini' \
+         -o -name '*.properties' \
+         -o -name '*.json' \
+         -o -name '*.json5' \
+         -o -name '*.jsonc' \
+         -o -name '*.txt' \
+         -o -name '*.xml' \
+         -o -name '*.config' \
+         -o -name '*.env' \
+         -o -name 'paper-global.yml' \
+         -o -name 'paper-world-defaults.yml' \
+         -o -name 'paper.yml' \
+         -o -name 'spigot.yml' \
+         -o -name 'bukkit.yml' \
+         -o -name 'server.properties' \
+         -o -name 'velocity.toml' \
+         -o -name 'whitelist.json' \
+      \) -print0
+  )
+}
+
+print_section_header() {
+  local title="$1"
+  printf '\n%s\n' "$title"
+}
+
+run_grep_section() {
+  local title="$1"
+  local regex="$2"
+  local matched=1
+
+  print_section_header "$title"
+
+  if [[ "${#scan_files[@]}" -eq 0 ]]; then
+    printf 'No candidate config files were found.\n'
+    return 0
+  fi
+
+  if grep -H -n -E "$regex" "${scan_files[@]}"; then
+    matched=0
+  fi
+
+  if [[ "$matched" -ne 0 ]]; then
+    printf 'No matches.\n'
+  fi
+}
+
+parse_args() {
+  exact_hostnames=()
+  exact_ports=()
+  exact_paths=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --hostname)
+        [[ $# -ge 2 ]] || die "missing value for --hostname"
+        exact_hostnames+=("$2")
+        shift 2
+        ;;
+
+      --port)
+        [[ $# -ge 2 ]] || die "missing value for --port"
+        [[ "$2" =~ ^[0-9]+$ ]] || die "port must be numeric: $2"
+        exact_ports+=("$2")
+        shift 2
+        ;;
+
+      --path)
+        [[ $# -ge 2 ]] || die "missing value for --path"
+        exact_paths+=("$2")
+        shift 2
+        ;;
+
+      -h|--help)
+        usage
+        exit 0
+        ;;
+
+      --)
+        shift
+        break
+        ;;
+
+      -*)
+        die "unknown option: $1"
+        ;;
+
+      *)
+        break
+        ;;
+    esac
+  done
+
+  [[ $# -eq 1 ]] || {
+    usage >&2
+    exit 1
+  }
+
+  server_dir="$1"
+}
+
+main() {
+  local path_regex hostname_key_regex port_key_regex escaped value
+
+  require_tools
+  parse_args "$@"
+
+  [[ -d "$server_dir" ]] || die "server directory not found: $server_dir"
+
+  collect_scan_files "$server_dir"
+
+  printf 'Migration config scan:\n'
+  printf '  Server dir:      %s\n' "$server_dir"
+  printf '  Candidate files: %s\n' "${#scan_files[@]}"
+
+  path_regex="/(servers|home/minecraft|srv/minecraft|opt/minecraft|home/[^/]+/manage/plugins|docker/data/panel\\.[^/]+/volumes)[^\"'[:space:]]*"
+  run_grep_section 'Likely old absolute paths:' "$path_regex"
+
+  hostname_key_regex='(^|[[:space:]])([A-Za-z0-9_.-]*(host|hostname|address|addr|server|redis|mysql|database|db|url|socket|ip)[A-Za-z0-9_.-]*)[[:space:]]*[:=][[:space:]]*["'\'' ]*[^#[:space:]]+'
+  run_grep_section 'Host or address settings:' "$hostname_key_regex"
+
+  port_key_regex='(^|[[:space:]])([A-Za-z0-9_.-]*port[A-Za-z0-9_.-]*)[[:space:]]*[:=][[:space:]]*["'\'' ]*[0-9]{2,5}'
+  run_grep_section 'Port settings:' "$port_key_regex"
+
+  for value in "${exact_paths[@]}"; do
+    escaped="$(escape_ere "$value")"
+    run_grep_section "Exact path probe: $value" "$escaped"
+  done
+
+  for value in "${exact_hostnames[@]}"; do
+    escaped="$(escape_ere "$value")"
+    run_grep_section "Exact hostname probe: $value" "(^|[^[:alnum:]_.-])${escaped}([^[:alnum:]_.-]|$)"
+  done
+
+  for value in "${exact_ports[@]}"; do
+    escaped="$(escape_ere "$value")"
+    run_grep_section "Exact port probe: $value" "(^|[^0-9])${escaped}([^0-9]|$)"
+  done
+}
+
+main "$@"
