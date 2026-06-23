@@ -89,6 +89,13 @@ print_section_header() {
   printf '\n%s\n' "$title"
 }
 
+redact_sensitive_output() {
+  sed -E '
+    s/((secret|password|passwd|token|api[_-]?key|private[_-]?key)[[:space:]]*[:=][[:space:]]*["'"'"' ]?)[^"'"'"'#[:space:]]+/\1[REDACTED]/Ig;
+    s/((secret|password|passwd|token|api[_-]?key|private[_-]?key)[[:space:]]*"[[:space:]]*:[[:space:]]*")[^"]+/\1[REDACTED]/Ig
+  '
+}
+
 run_grep_section() {
   local title="$1"
   local regex="$2"
@@ -101,7 +108,7 @@ run_grep_section() {
     return 0
   fi
 
-  if grep -H -n -E "$regex" "${scan_files[@]}"; then
+  if grep -H -n -E "$regex" "${scan_files[@]}" | redact_sensitive_output; then
     matched=0
   fi
 
