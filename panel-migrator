@@ -20,7 +20,7 @@ die() {
 require_tools() {
   local missing=0
 
-  for tool in jq rsync awk df ps readlink lsof; do
+  for tool in jq rsync awk df ps readlink lsof find grep sed; do
     if ! command -v "$tool" >/dev/null 2>&1; then
       printf 'Missing required command: %s\n' "$tool" >&2
       missing=1
@@ -145,6 +145,7 @@ Usage:
   ./panel-migrator list
   ./panel-migrator adopt <identifier> <panel-server-uuid>
   ./panel-migrator create <identifier>
+  ./panel-migrator preflight <identifier>
   ./panel-migrator migrate <identifier>
   ./panel-migrator <identifier>
 
@@ -162,6 +163,261 @@ Config supports:
   default_rsync_excludes: [ "plugins/WorldEdit/.archive-unpack/" ]
   servers[].rsync_excludes: [ "some/path/" ]
 USAGE
+}
+
+collect_preflight_files() {
+  local root="$1"
+  local path
+  local rel
+
+  scan_files=()
+  scan_files_no_server_properties=()
+  service_scan_files=()
+  routing_scan_files=()
+  commandhelper_scan_files=()
+  server_properties_files=()
+  paper_global_files=()
+
+  while IFS= read -r -d '' path; do
+    rel="${path#"${root%/}/"}"
+
+    case "$rel" in
+      mark2.properties)
+        continue
+        ;;
+    esac
+
+    scan_files+=("$path")
+
+    if [[ "${path##*/}" == "server.properties" ]]; then
+      server_properties_files+=("$path")
+    else
+      scan_files_no_server_properties+=("$path")
+    fi
+
+    case "$rel" in
+      plugins/LuckPerms/config.yml|plugins/LWC/core.yml|plugins/LogBlock/config.yml|plugins/NerdMessage/config.yml|plugins/WorldGuard/config.yml)
+        service_scan_files+=("$path")
+        ;;
+      plugins/NerdLobby/servers.yml|plugins/NerdGreeting/config.yml|plugins/NerdMessage/config.yml)
+        routing_scan_files+=("$path")
+        ;;
+      plugins/CommandHelper/prefs/preferences.ini|plugins/CommandHelper/prefs/persistence.ini)
+        commandhelper_scan_files+=("$path")
+        ;;
+      config/paper-global.yml|paper-global.yml)
+        paper_global_files+=("$path")
+        ;;
+    esac
+  done < <(
+    find "$root" \
+      \( -path '*/.git/*' \
+         -o -path '*/logs/*' \
+         -o -path '*/cache/*' \
+         -o -path '*/crash-reports/*' \
+         -o -path '*/world/*' \
+         -o -path '*/world_nether/*' \
+         -o -path '*/world_the_end/*' \
+         -o -path '*/plugins/*/web/*' \
+         -o -path '*/plugins/*/tiles/*' \
+      \) -prune -o \
+      -type f \
+      \( -name '*.yml' \
+         -o -name '*.yaml' \
+         -o -name '*.toml' \
+         -o -name '*.conf' \
+         -o -name '*.cfg' \
+         -o -name '*.cnf' \
+         -o -name '*.ini' \
+         -o -name '*.properties' \
+         -o -name '*.json' \
+         -o -name '*.json5' \
+         -o -name '*.jsonc' \
+         -o -name '*.xml' \
+         -o -name '*.config' \
+         -o -name '*.env' \
+         -o -name 'paper-global.yml' \
+         -o -name 'paper-world-defaults.yml' \
+         -o -name 'paper.yml' \
+         -o -name 'spigot.yml' \
+         -o -name 'bukkit.yml' \
+         -o -name 'server.properties' \
+         -o -name 'velocity.toml' \
+      \) -print0
+  )
+}
+
+redact_sensitive_output() {
+  sed -E '
+    s/((secret|password|passwd|token|api[_-]?key|private[_-]?key)[[:space:]]*[:=][[:space:]]*["'"'"' ]?)[^"'"'"'#[:space:]]+/\1[REDACTED]/Ig;
+    s/((secret|password|passwd|token|api[_-]?key|private[_-]?key)[[:space:]]*"[[:space:]]*:[[:space:]]*")[^"]+/\1[REDACTED]/Ig
+  '
+}
+
+add_preflight_finding() {
+  local severity="$1"
+  local title="$2"
+  local detail="$3"
+  local line="[$title] $detail"
+
+  case "$severity" in
+    blocker)
+      preflight_blockers+=("$line")
+      ;;
+    warning)
+      preflight_warnings+=("$line")
+      ;;
+    auto)
+      preflight_auto+=("$line")
+      ;;
+    info)
+      preflight_info+=("$line")
+      ;;
+    *)
+      die "unknown preflight severity: $severity"
+      ;;
+  esac
+}
+
+append_preflight_matches() {
+  local severity="$1"
+  local title="$2"
+  local regex="$3"
+  local scope="${4:-all}"
+  local line
+  local -a files=()
+
+  case "$scope" in
+    all)
+      files=("${scan_files[@]}")
+      ;;
+    no_server_properties)
+      files=("${scan_files_no_server_properties[@]}")
+      ;;
+    service)
+      files=("${service_scan_files[@]}")
+      ;;
+    routing)
+      files=("${routing_scan_files[@]}")
+      ;;
+    commandhelper)
+      files=("${commandhelper_scan_files[@]}")
+      ;;
+    server_properties)
+      files=("${server_properties_files[@]}")
+      ;;
+    paper_global)
+      files=("${paper_global_files[@]}")
+      ;;
+    *)
+      die "unknown preflight scope: $scope"
+      ;;
+  esac
+
+  [[ "${#files[@]}" -gt 0 ]] || return 0
+
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    add_preflight_finding "$severity" "$title" "$line"
+  done < <(grep -H -n -E "$regex" "${files[@]}" 2>/dev/null | redact_sensitive_output || true)
+}
+
+print_preflight_section() {
+  local title="$1"
+  shift
+  local -a entries=("$@")
+  local entry
+
+  [[ "${#entries[@]}" -gt 0 ]] || return 0
+
+  printf '\n%s\n' "$title"
+  for entry in "${entries[@]}"; do
+    printf '  - %s\n' "$entry"
+  done
+}
+
+run_preflight() {
+  local id="$1"
+  local source
+  local uuid
+  local root
+  local target_dir
+  local allocation_id
+  local port
+  local result="pass"
+
+  preflight_blockers=()
+  preflight_warnings=()
+  preflight_auto=()
+  preflight_info=()
+
+  server_exists "$id" || die "unknown server identifier: $id"
+
+  source="$(server_required_field "$id" "source")"
+  allocation_id="$(server_required_field "$id" "allocation_id")"
+  uuid="$(server_field "$id" "panel_uuid" "")"
+  root="$(panel_volume_root)"
+
+  [[ -d "$source" ]] || die "source directory does not exist: $source"
+
+  if [[ -n "$uuid" && "$uuid" != "null" ]]; then
+    target_dir="${root}/${uuid}"
+  else
+    target_dir="not created yet"
+  fi
+
+  port="$(allocation_port "$allocation_id")"
+  [[ -n "$port" ]] || port="unknown"
+
+  collect_preflight_files "$source"
+
+  append_preflight_matches auto 'Migrator rewrites server.properties during migration' '^(server-ip|server-port|online-mode)=' server_properties
+  append_preflight_matches blocker 'Absolute path outside the Panel volume model' '/(servers|home/minecraft|srv/minecraft|opt/minecraft|docker/data/panel\.[^/]+/volumes)[^"'"'"'[:space:]]*' commandhelper
+  append_preflight_matches blocker 'Service endpoint uses localhost or 127.0.0.1' '(^|[[:space:]])([A-Za-z0-9_.-]*(host|hostname|address|addr|server|redis|mysql|database|db|url|dsn)[A-Za-z0-9_.-]*)[[:space:]]*[:=][[:space:]]*["'"'"' ]*(jdbc:mysql://)?(localhost|127\.0\.0\.1)([:/"'"'"' #]|$)' service
+  append_preflight_matches blocker 'JDBC URL uses localhost or 127.0.0.1' 'jdbc:mysql://(localhost|127\.0\.0\.1)(:[0-9]+)?/' service
+  append_preflight_matches warning 'Listener settings to verify in Panel' '^(enable-query|query\.port|enable-rcon|rcon\.port)=' server_properties
+  append_preflight_matches warning 'Cross-server routing or displayed identity to verify' '(^|[[:space:]])([A-Za-z0-9_.-]*(host|hostname|server|address|addr|ip|url|port|name)[A-Za-z0-9_.-]*)[[:space:]]*[:=][[:space:]]*["'"'"' ]*[^#[:space:]]+' routing
+
+  if [[ "${#paper_global_files[@]}" -eq 0 ]]; then
+    add_preflight_finding info 'Velocity forwarding check' 'No paper-global.yml found in source; verify the Paper Velocity forwarding settings after migration.'
+  else
+    add_preflight_finding warning 'Velocity forwarding check' 'Verify config/paper-global.yml has proxies.velocity.enabled=true and the same secret as Velocity forwarding.secret.'
+  fi
+
+  if [[ "${#commandhelper_scan_files[@]}" -gt 0 ]]; then
+    add_preflight_finding warning 'CommandHelper shared data' 'Verify CommandHelper base-dir and sqlite persistence are volume-local or intentionally mounted shared data.'
+  fi
+
+  if [[ "${#preflight_blockers[@]}" -gt 0 ]]; then
+    result="blocked"
+  elif [[ "${#preflight_warnings[@]}" -gt 0 ]]; then
+    result="warn"
+  fi
+
+  cat <<REPORT
+Preflight report:
+
+  Identifier:       $id
+  Source:           $source
+  Target path:      $target_dir
+  Allocation ID:    $allocation_id
+  Allocation port:  $port
+  Candidate files:  ${#scan_files[@]}
+REPORT
+
+  print_preflight_section 'Auto-mitigated by migrator:' "${preflight_auto[@]}"
+  print_preflight_section 'Blockers:' "${preflight_blockers[@]}"
+  print_preflight_section 'Warnings:' "${preflight_warnings[@]}"
+  print_preflight_section 'Info:' "${preflight_info[@]}"
+
+  printf '\nResult: %s (%s blocker(s), %s warning(s), %s auto-mitigated, %s info)\n' \
+    "$result" \
+    "${#preflight_blockers[@]}" \
+    "${#preflight_warnings[@]}" \
+    "${#preflight_auto[@]}" \
+    "${#preflight_info[@]}"
+
+  [[ "$result" != "blocked" ]]
 }
 
 list_servers() {
@@ -881,6 +1137,10 @@ Migration plan:
 
 PLAN
 
+  if ! run_preflight "$id"; then
+    die "preflight found migration blockers; resolve them before migrating"
+  fi
+
   if [[ "$disk_policy" == "insufficient" ]]; then
     if is_preview_run; then
       printf 'Dry-run warning: target filesystem does not appear to have enough free space for this migration.\n' >&2
@@ -1004,6 +1264,11 @@ main() {
     create)
       [[ $# -eq 2 ]] || die "usage: ./panel-migrator create <identifier>"
       create_destination "$2" >/dev/null
+      ;;
+
+    preflight)
+      [[ $# -eq 2 ]] || die "usage: ./panel-migrator preflight <identifier>"
+      run_preflight "$2"
       ;;
 
     migrate)
