@@ -44,10 +44,21 @@ Next, review `panel-migrator.json` and update server entries as needed.
 ./ptero users
 ./ptero allocations
 ./ptero servers
+./ptero service-host
+./ptero service-host lobby-dev
 ./ptero forwarding-check lobby-dev
 ./ptero egg 1
 ./ptero endpoint --velocity-name lobby lobby-dev
 ./ptero endpoint --update-velocity-config --velocity-name lobby lobby-dev
+```
+
+Resolve the host-side IP that Pterodactyl containers should use for shared host
+services such as MariaDB or Redis:
+
+```sh
+./ptero service-host
+./ptero service-host --plain
+./ptero service-host lobby-dev
 ```
 
 Velocity config updates:

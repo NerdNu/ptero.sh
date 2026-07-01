@@ -13,6 +13,7 @@ Read-only:
   ./ptero users
   ./ptero allocations
   ./ptero servers
+  ./ptero service-host [--plain] [server]
   ./ptero endpoint [--velocity-name <name>] [--target-host <host>] [--target-port <port>] [--check-reachability] [--update-velocity-config] <server>
   ./ptero endpoint <server>
   ./ptero forwarding-check <server>
@@ -27,6 +28,8 @@ Examples:
   ./ptero ping
   ./ptero allocations
   ./ptero servers
+  ./ptero service-host
+  ./ptero service-host lobby-dev
   ./ptero endpoint lobby-dev
   ./ptero endpoint --velocity-name lobby 10
   ./ptero endpoint --check-reachability --velocity-name lobby 10
@@ -77,6 +80,10 @@ case "$command" in
 
   servers|servers-list)
     run_script ptero-servers-list "$@"
+    ;;
+
+  service-host|service-host-show)
+    run_script ptero-service-host-show "$@"
     ;;
 
   endpoint|endpoint-show)
