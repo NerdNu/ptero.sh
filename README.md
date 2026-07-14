@@ -23,7 +23,10 @@ Some important files:
 
 ## Setup
 
-First, review `ptero.env` and set a real `PTERO_APP_API_KEY`.
+First, review `ptero.env` and set real API keys.
+
+- `PTERO_APP_API_KEY` for `/api/application/...` commands
+- `PTERO_CLIENT_API_KEY` for client power commands such as `./ptero start`
 
 Write-oriented `ptero` commands and `panel-migrator` default to preview mode.
 Set `PTERO_LIVE_RUN=1` to allow live writes and real migrations.
@@ -32,6 +35,7 @@ I like to put something like this into my `~/.pterorc` file:
 
 ```sh
 export PTERO_APP_API_KEY="ptla_changeme"
+export PTERO_CLIENT_API_KEY="ptlc_changeme"
 ```
 
 Next, review `panel-migrator.json` and update server entries as needed.
@@ -48,8 +52,16 @@ Next, review `panel-migrator.json` and update server entries as needed.
 ./ptero service-host lobby-dev
 ./ptero forwarding-check lobby-dev
 ./ptero egg 1
+./ptero start lobby-dev
 ./ptero endpoint --velocity-name lobby lobby-dev
 ./ptero endpoint --update-velocity-config --velocity-name lobby lobby-dev
+```
+
+Start a disposable rehearsal backend:
+
+```sh
+./ptero start lobby-dev
+PTERO_LIVE_RUN=1 ./ptero start lobby-dev
 ```
 
 Resolve the host-side IP that Pterodactyl containers should use for shared host
