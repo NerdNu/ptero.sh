@@ -87,6 +87,54 @@ ptero_api() {
   rm -f "$tmp_body"
 }
 
+ptero_client_api() {
+  local method="$1"
+  local path="$2"
+  local data="${3:-}"
+  local tmp_body
+  local status
+
+  ptero_require_tools
+  ptero_require_env PTERO_URL PTERO_CLIENT_API_KEY
+
+  tmp_body="$(mktemp)"
+
+  if [[ -n "$data" ]]; then
+    status="$(
+      curl -sS \
+        -o "$tmp_body" \
+        -w '%{http_code}' \
+        -X "$method" \
+        "${PTERO_URL%/}${path}" \
+        -H "Authorization: Bearer ${PTERO_CLIENT_API_KEY}" \
+        -H "Accept: Application/vnd.pterodactyl.v1+json" \
+        -H "Content-Type: application/json" \
+        --data "$data"
+    )"
+  else
+    status="$(
+      curl -sS \
+        -o "$tmp_body" \
+        -w '%{http_code}' \
+        -X "$method" \
+        "${PTERO_URL%/}${path}" \
+        -H "Authorization: Bearer ${PTERO_CLIENT_API_KEY}" \
+        -H "Accept: Application/vnd.pterodactyl.v1+json"
+    )"
+  fi
+
+  if [[ "$status" -lt 200 || "$status" -ge 300 ]]; then
+    printf 'Panel Client API request failed: HTTP %s\n' "$status" >&2
+    cat "$tmp_body" >&2
+    printf '\n' >&2
+    rm -f "$tmp_body"
+    exit 1
+  fi
+
+  cat "$tmp_body"
+  rm -f "$tmp_body"
+}
+
 ptero_fetch_server_by_query() {
   local query="$1"
   local page=1

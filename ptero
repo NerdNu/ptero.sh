@@ -20,6 +20,7 @@ Read-only:
   ./ptero egg [egg-id]
 
 Write:
+  ./ptero start <server-id|server-name>
   ./ptero create <external-id> <display-name> <allocation-id> [server-type]
   ./ptero create-paper <external-id> <display-name> <allocation-id>
   ./ptero velocity-config-update <identifier>
@@ -37,6 +38,7 @@ Examples:
   ./ptero forwarding-check lobby-dev
   ./ptero velocity-config-update lobby-dev
   ./ptero egg 1
+  ./ptero start lobby-dev
   ./ptero create lobby-dev "Lobby Dev" 2
   ./ptero create lobby-dev "Lobby Dev" 2 paper
   ./ptero create modded-dev "Modded Dev" 7 fabric
@@ -96,6 +98,10 @@ case "$command" in
 
   egg|egg-show)
     run_script ptero-egg-show "$@"
+    ;;
+
+  start|server-start)
+    run_script ptero-server-start "$@"
     ;;
 
   create|server-create)
