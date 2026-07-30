@@ -118,4 +118,12 @@ MIGRATOR_DRY_RUN_SUDO=1 ./panel-migrator example-server
 PTERO_LIVE_RUN=1 ./panel-migrator example-server
 ```
 
+Inventory immediate bare-metal server directories before adding migration
+targets:
+
+```sh
+bash ./migration-server-inventory
+bash ./migration-server-inventory /servers
+```
+
 More detailed workflow notes live in `MIGRATION_PLAN.md`.
