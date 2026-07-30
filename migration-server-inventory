@@ -14,7 +14,9 @@ printf '%-24s %-8s %-19s %-6s %-6s %-6s %-6s %-6s %-6s %s\n' \
 find "$root" -mindepth 1 -maxdepth 1 -type d -print | sort |
 while IFS= read -r dir; do
   name="${dir##*/}"
-  size="$(du -sh "$dir" 2>/dev/null | awk '{print $1}')"
+  if ! size="$(du -sh "$dir" 2>/dev/null | awk 'NR == 1 { print $1 }')"; then
+    size='?'
+  fi
   mtime="$(date -r "$dir" '+%Y-%m-%d %H:%M' 2>/dev/null || printf '?')"
   has_properties='no'
   has_paper='no'
@@ -29,7 +31,9 @@ while IFS= read -r dir; do
   [[ -d "$dir/logs" ]] && has_logs='yes'
 
   if [[ -d "$dir/plugins" ]]; then
-    links="$(find "$dir/plugins" -type l | wc -l | awk '{print $1}')"
+    if ! links="$(find "$dir/plugins" -type l 2>/dev/null | wc -l | awk '{print $1}')"; then
+      links='?'
+    fi
   else
     links=0
   fi
