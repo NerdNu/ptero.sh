@@ -75,6 +75,7 @@ Migration inventory and execution tool:
 
 ```sh
 ./panel-migrator list
+./panel-migrator preflight lobby-dev
 ./panel-migrator lobby-dev
 MIGRATOR_DRY_RUN_SUDO=1 ./panel-migrator lobby-dev
 PTERO_LIVE_RUN=1 ./panel-migrator lobby-dev
@@ -198,7 +199,25 @@ After creation, verify:
 Do not start the server yet.
 
 
-### 5. Run a migration dry run
+### 5. Run preflight
+
+Run the structured config preflight first:
+
+```sh
+./panel-migrator preflight lobby-dev
+```
+
+The preflight classifies findings as:
+
+- `auto-mitigated`: the migrator already rewrites these during migration, such as `server-ip`, `server-port`, and `online-mode` in `server.properties`
+- `blockers`: known migration risks that should be fixed before migrating, such as `localhost` service endpoints or CommandHelper absolute paths
+- `warnings`: items that still need operator verification, such as cross-server routing, Velocity forwarding, and query or RCON listener settings
+- `info`: reminders that do not block migration
+
+If preflight reports blockers, stop and resolve them before moving data.
+
+
+### 6. Run a migration dry run
 
 Normal dry run:
 
@@ -230,10 +249,10 @@ The default disk margin is 110%. To test another margin:
 MIGRATOR_DISK_SAFETY_PERCENT=125 ./panel-migrator lobby-dev
 ```
 
-Dry-run mode now walks the same read-only preflight path as a real migration when run with `MIGRATOR_DRY_RUN_SUDO=1`. Without that flag, it skips the privileged source-process, source-activity, and target-container checks, and prints exactly which checks were skipped and how to include them.
+Dry-run mode now runs the same config preflight as a real migration. When run with `MIGRATOR_DRY_RUN_SUDO=1`, it also walks the same read-only privileged checks as a real migration. Without that flag, it skips the privileged source-process, source-activity, and target-container checks, and prints exactly which checks were skipped and how to include them.
 
 
-### 6. Run the real migration
+### 7. Run the real migration
 
 Run:
 
@@ -252,14 +271,15 @@ The migrator will:
 1. Refuse if `.panel-migration.json` already exists, unless `MIGRATOR_FORCE=1`.
 2. Refuse a non-empty target, unless `MIGRATOR_REPLACE_TARGET=1`.
 3. Refuse if the target Panel container is running.
-4. Check disk space with the configured safety margin.
-5. Check for a running Java server whose process working directory matches the source directory.
-6. If one is found, ask you to stop it gracefully with `mark2`, then confirm by typing `STOPPED`.
-7. Re-check that the matching Java process is gone and that there is no more known open-file activity in the source directory.
-8. Copy files with rsync.
-9. Update `server.properties`.
-10. Write `.panel-migration.json`.
-11. Fix ownership to `pterodactyl:pterodactyl`.
+4. Run the same structured config preflight and refuse known blockers.
+5. Check disk space with the configured safety margin.
+6. Check for a running Java server whose process working directory matches the source directory.
+7. If one is found, ask you to stop it gracefully with `mark2`, then confirm by typing `STOPPED`.
+8. Re-check that the matching Java process is gone and that there is no more known open-file activity in the source directory.
+9. Copy files with rsync.
+10. Update `server.properties`.
+11. Write `.panel-migration.json`.
+12. Fix ownership to `pterodactyl:pterodactyl`.
 
 Use these overrides only when intentional:
 

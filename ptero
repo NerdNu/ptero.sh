@@ -13,12 +13,14 @@ Read-only:
   ./ptero users
   ./ptero allocations
   ./ptero servers
+  ./ptero service-host [--plain] [server]
   ./ptero endpoint [--velocity-name <name>] [--target-host <host>] [--target-port <port>] [--check-reachability] [--update-velocity-config] <server>
   ./ptero endpoint <server>
   ./ptero forwarding-check <server>
   ./ptero egg [egg-id]
 
 Write:
+  ./ptero start <server-id|server-name>
   ./ptero create <external-id> <display-name> <allocation-id> [server-type]
   ./ptero create-paper <external-id> <display-name> <allocation-id>
   ./ptero velocity-config-update <identifier>
@@ -27,6 +29,8 @@ Examples:
   ./ptero ping
   ./ptero allocations
   ./ptero servers
+  ./ptero service-host
+  ./ptero service-host lobby-dev
   ./ptero endpoint lobby-dev
   ./ptero endpoint --velocity-name lobby 10
   ./ptero endpoint --check-reachability --velocity-name lobby 10
@@ -34,6 +38,7 @@ Examples:
   ./ptero forwarding-check lobby-dev
   ./ptero velocity-config-update lobby-dev
   ./ptero egg 1
+  ./ptero start lobby-dev
   ./ptero create lobby-dev "Lobby Dev" 2
   ./ptero create lobby-dev "Lobby Dev" 2 paper
   ./ptero create modded-dev "Modded Dev" 7 fabric
@@ -79,6 +84,10 @@ case "$command" in
     run_script ptero-servers-list "$@"
     ;;
 
+  service-host|service-host-show)
+    run_script ptero-service-host-show "$@"
+    ;;
+
   endpoint|endpoint-show)
     run_script ptero-endpoint-show "$@"
     ;;
@@ -89,6 +98,10 @@ case "$command" in
 
   egg|egg-show)
     run_script ptero-egg-show "$@"
+    ;;
+
+  start|server-start)
+    run_script ptero-server-start "$@"
     ;;
 
   create|server-create)

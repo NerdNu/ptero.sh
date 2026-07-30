@@ -98,6 +98,7 @@ main() {
   printf '  Panel query:     %s\n' "$panel_server_query"
   printf '  Server key:      %s\n' "$velocity_backend_key"
   printf '  Config file:     %s\n' "$CONFIG_FILE"
+  printf '  Dependency:      backend must have started once so Docker assigns its network IP\n'
 
   endpoint_args=(--velocity-name "$velocity_backend_key" --update-velocity-config)
   endpoint_args+=("$panel_server_query")

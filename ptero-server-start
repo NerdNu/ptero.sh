@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+source "${SCRIPT_DIR}/ptero-common.sh"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  ./ptero-server-start <server>
+
+Examples:
+  ./ptero-server-start lobby-dev
+  PTERO_LIVE_RUN=1 ./ptero-server-start lobby-dev
+
+By default this is preview-only. Set PTERO_LIVE_RUN=1 to send the Client API
+power action.
+USAGE
+}
+
+die() {
+  printf 'Error: %s\n' "$*" >&2
+  exit 1
+}
+
+parse_args() {
+  preview_only=1
+
+  if ptero_is_live_run; then
+    preview_only=0
+  fi
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help)
+        usage
+        exit 0
+        ;;
+
+      --)
+        shift
+        break
+        ;;
+
+      -*)
+        printf 'Unknown option: %s\n' "$1" >&2
+        usage >&2
+        exit 1
+        ;;
+
+      *)
+        break
+        ;;
+    esac
+  done
+
+  [[ $# -eq 1 ]] || {
+    usage >&2
+    exit 1
+  }
+
+  server_query="$1"
+}
+
+main() {
+  local server_json client_identifier payload
+
+  ptero_require_tools
+  parse_args "$@"
+
+  server_json="$(ptero_fetch_server_by_query "$server_query")" || die "unknown server: $server_query"
+
+  client_identifier="$(printf '%s\n' "$server_json" | jq -r '.identifier')"
+  [[ -n "$client_identifier" && "$client_identifier" != "null" ]] || die "resolved server is missing client identifier"
+
+  printf 'Server start target:\n'
+  printf '  Query:           %s\n' "$server_query"
+  printf '  Panel ID:        %s\n' "$(printf '%s\n' "$server_json" | jq -r '.id')"
+  printf '  External ID:     %s\n' "$(printf '%s\n' "$server_json" | jq -r '.external_id')"
+  printf '  Name:            %s\n' "$(printf '%s\n' "$server_json" | jq -r '.name')"
+  printf '  Identifier:      %s\n' "$client_identifier"
+  printf '  Power action:    start\n'
+  printf '  API family:      client\n'
+
+  if [[ "$preview_only" == "1" ]]; then
+    printf '  Result:          preview only\n'
+    printf '  Live command:    PTERO_LIVE_RUN=1 ./ptero start %s\n' "$server_query"
+    return 0
+  fi
+
+  payload='{"signal":"start"}'
+  ptero_client_api POST "/api/client/servers/${client_identifier}/power" "$payload" >/dev/null
+
+  printf '  Result:          start signal submitted\n'
+}
+
+main "$@"

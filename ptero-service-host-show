@@ -1,0 +1,215 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+source "${SCRIPT_DIR}/ptero-common.sh"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  ./ptero-service-host-show [--plain] [server]
+
+Shows the host-side IP address that Pterodactyl containers should use to reach
+shared host services such as MariaDB or Redis.
+
+When a server is provided, the command prefers the gateway of that server's
+attached Docker networks. Without a server, it falls back to the host address on
+the `pterodactyl0` bridge interface.
+
+Examples:
+  ./ptero-service-host-show
+  ./ptero-service-host-show --plain
+  ./ptero-service-host-show lobby-dev
+  ./ptero service-host lobby-dev
+USAGE
+}
+
+die() {
+  printf 'Error: %s\n' "$*" >&2
+  exit 1
+}
+
+require_tools() {
+  local missing=0
+
+  for tool in jq ip; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      printf 'Missing required command: %s\n' "$tool" >&2
+      missing=1
+    fi
+  done
+
+  [[ "$missing" -eq 0 ]] || exit 1
+}
+
+run_docker_command() {
+  local prompt_message="$1"
+  shift
+  local output
+
+  if command -v docker >/dev/null 2>&1; then
+    if output="$(docker "$@" 2>/dev/null)"; then
+      printf '%s\n' "$output"
+      return 0
+    fi
+  fi
+
+  if command -v sudo >/dev/null 2>&1; then
+    if output="$(sudo -n docker "$@" 2>/dev/null)"; then
+      printf '%s\n' "$output"
+      return 0
+    fi
+
+    printf '%s\n' "$prompt_message" >&2
+    if output="$(sudo docker "$@" 2>/dev/null)"; then
+      printf '%s\n' "$output"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+docker_inspect_json() {
+  local container="$1"
+  run_docker_command 'Docker inspect requires sudo access; requesting it now.' inspect "$container"
+}
+
+is_private_ipv4() {
+  local ip="$1"
+
+  [[ "$ip" =~ ^10\. ]] && return 0
+  [[ "$ip" =~ ^192\.168\. ]] && return 0
+  [[ "$ip" =~ ^172\.([1][6-9]|2[0-9]|3[0-1])\. ]] && return 0
+  return 1
+}
+
+gateway_priority() {
+  local network_name="$1"
+  local gateway="$2"
+  local score=0
+
+  [[ -n "$gateway" && "$gateway" != "null" ]] || {
+    printf '0\n'
+    return 0
+  }
+
+  if is_private_ipv4 "$gateway"; then
+    score=$((score + 100))
+  fi
+
+  if [[ "$network_name" == pterodactyl* || "$network_name" == *pterodactyl* ]]; then
+    score=$((score + 50))
+  fi
+
+  if [[ "$gateway" =~ ^10\. ]]; then
+    score=$((score + 10))
+  fi
+
+  printf '%s\n' "$score"
+}
+
+bridge_ip_for_interface() {
+  local iface="$1"
+  ip -o -4 addr show dev "$iface" scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n 1
+}
+
+select_gateway_from_inspect() {
+  local inspect_json="$1"
+
+  printf '%s\n' "$inspect_json" \
+    | jq -r '
+        (.[0].NetworkSettings.Networks // {})
+        | to_entries[]?
+        | [.key, (.value.Gateway // "")]
+        | @tsv
+      ' \
+    | while IFS=$'\t' read -r network_name gateway; do
+        [[ -n "$gateway" ]] || continue
+        printf '%s\t%s\t%s\n' "$(gateway_priority "$network_name" "$gateway")" "$network_name" "$gateway"
+      done \
+    | sort -rn \
+    | awk 'NR == 1 { print $3 }'
+}
+
+parse_args() {
+  plain_output=0
+  server_query=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --plain)
+        plain_output=1
+        shift
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      --)
+        shift
+        break
+        ;;
+      -* )
+        die "unknown option: $1"
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+
+  if [[ $# -gt 1 ]]; then
+    usage >&2
+    exit 1
+  fi
+
+  if [[ $# -eq 1 ]]; then
+    server_query="$1"
+  fi
+}
+
+main() {
+  local service_host=""
+  local source=""
+  local server_json uuid inspect_json
+
+  require_tools
+  parse_args "$@"
+
+  if [[ -n "${PTERO_SERVICE_HOST:-}" ]]; then
+    service_host="$PTERO_SERVICE_HOST"
+    source='environment: PTERO_SERVICE_HOST'
+  elif [[ -n "$server_query" ]]; then
+    server_json="$(ptero_fetch_server_by_query "$server_query")" || die "No Panel server matched: $server_query"
+    uuid="$(printf '%s\n' "$server_json" | jq -r '.uuid')"
+
+    if inspect_json="$(docker_inspect_json "$uuid")"; then
+      service_host="$(select_gateway_from_inspect "$inspect_json")"
+      if [[ -n "$service_host" ]]; then
+        source="docker network gateway for server $server_query"
+      fi
+    fi
+  fi
+
+  if [[ -z "$service_host" ]]; then
+    service_host="$(bridge_ip_for_interface pterodactyl0)"
+    if [[ -n "$service_host" ]]; then
+      source='bridge interface pterodactyl0'
+    fi
+  fi
+
+  [[ -n "$service_host" ]] || die 'could not determine a host-side service IP; try passing a server identifier or set PTERO_SERVICE_HOST explicitly'
+
+  if [[ "$plain_output" == "1" ]]; then
+    printf '%s\n' "$service_host"
+    return 0
+  fi
+
+  printf 'Service host:\n'
+  printf '  IP:      %s\n' "$service_host"
+  printf '  Source:  %s\n' "$source"
+  printf '  Use for: shared host services reachable from Pterodactyl containers\n'
+}
+
+main "$@"
