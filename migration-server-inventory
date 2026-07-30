@@ -28,7 +28,11 @@ while IFS= read -r dir; do
   [[ -d "$dir/world" || -d "$dir/world_nether" || -d "$dir/world_the_end" ]] && has_world='yes'
   [[ -d "$dir/logs" ]] && has_logs='yes'
 
-  links="$(find "$dir/plugins" -type l 2>/dev/null | wc -l | awk '{print $1}')"
+  if [[ -d "$dir/plugins" ]]; then
+    links="$(find "$dir/plugins" -type l | wc -l | awk '{print $1}')"
+  else
+    links=0
+  fi
 
   printf '%-24s %-8s %-19s %-6s %-6s %-6s %-6s %-6s %-6s %s\n' \
     "$name" "${size:-?}" "$mtime" "$has_properties" "$has_paper" "$has_plugins" \
