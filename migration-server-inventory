@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="${1:-/servers}"
+
+[[ -d "$root" ]] || {
+  printf 'Server root does not exist: %s\n' "$root" >&2
+  exit 1
+}
+
+printf '%-24s %-8s %-19s %-6s %-6s %-6s %-6s %-6s %-6s %s\n' \
+  'SERVER' 'SIZE' 'MTIME' 'PROP' 'PAPER' 'PLUG' 'WORLD' 'LOGS' 'LINKS' 'PATH'
+
+find "$root" -mindepth 1 -maxdepth 1 -type d -print | sort |
+while IFS= read -r dir; do
+  name="${dir##*/}"
+  size="$(du -sh "$dir" 2>/dev/null | awk '{print $1}')"
+  mtime="$(date -r "$dir" '+%Y-%m-%d %H:%M' 2>/dev/null || printf '?')"
+  has_properties='no'
+  has_paper='no'
+  has_plugins='no'
+  has_world='no'
+  has_logs='no'
+
+  [[ -f "$dir/server.properties" ]] && has_properties='yes'
+  [[ -f "$dir/paper-global.yml" || -f "$dir/config/paper-global.yml" ]] && has_paper='yes'
+  [[ -d "$dir/plugins" ]] && has_plugins='yes'
+  [[ -d "$dir/world" || -d "$dir/world_nether" || -d "$dir/world_the_end" ]] && has_world='yes'
+  [[ -d "$dir/logs" ]] && has_logs='yes'
+
+  links="$(find "$dir/plugins" -type l 2>/dev/null | wc -l | awk '{print $1}')"
+
+  printf '%-24s %-8s %-19s %-6s %-6s %-6s %-6s %-6s %-6s %s\n' \
+    "$name" "${size:-?}" "$mtime" "$has_properties" "$has_paper" "$has_plugins" \
+    "$has_world" "$has_logs" "$links" "$dir"
+done
