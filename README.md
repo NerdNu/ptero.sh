@@ -126,4 +126,7 @@ bash ./migration-server-inventory
 bash ./migration-server-inventory /servers
 ```
 
+The default report avoids recursive scans. Set `INVENTORY_INCLUDE_SIZE=1` to
+include recursive directory sizes; this can be slow for large server trees.
+
 More detailed workflow notes live in `MIGRATION_PLAN.md`.

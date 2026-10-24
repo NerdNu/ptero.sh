@@ -2,11 +2,19 @@
 set -euo pipefail
 
 root="${1:-/servers}"
+include_size="${INVENTORY_INCLUDE_SIZE:-0}"
 
 [[ -d "$root" ]] || {
   printf 'Server root does not exist: %s\n' "$root" >&2
   exit 1
 }
+
+[[ "$include_size" == '0' || "$include_size" == '1' ]] || {
+  printf 'INVENTORY_INCLUDE_SIZE must be 0 or 1.\n' >&2
+  exit 1
+}
+
+shopt -s nullglob
 
 printf '%-24s %-8s %-19s %-6s %-6s %-6s %-6s %-6s %-6s %s\n' \
   'SERVER' 'SIZE' 'MTIME' 'PROP' 'PAPER' 'PLUG' 'WORLD' 'LOGS' 'LINKS' 'PATH'
@@ -14,8 +22,11 @@ printf '%-24s %-8s %-19s %-6s %-6s %-6s %-6s %-6s %-6s %s\n' \
 find "$root" -mindepth 1 -maxdepth 1 -type d -print | sort |
 while IFS= read -r dir; do
   name="${dir##*/}"
-  if ! size="$(du -sh "$dir" 2>/dev/null | awk 'NR == 1 { print $1 }')"; then
-    size='?'
+  size='-'
+  if [[ "$include_size" == '1' ]]; then
+    if ! size="$(du -sh "$dir" 2>/dev/null | awk 'NR == 1 { print $1 }')"; then
+      size='?'
+    fi
   fi
   mtime="$(date -r "$dir" '+%Y-%m-%d %H:%M' 2>/dev/null || printf '?')"
   has_properties='no'
@@ -31,9 +42,11 @@ while IFS= read -r dir; do
   [[ -d "$dir/logs" ]] && has_logs='yes'
 
   if [[ -d "$dir/plugins" ]]; then
-    if ! links="$(find "$dir/plugins" -type l 2>/dev/null | wc -l | awk '{print $1}')"; then
-      links='?'
-    fi
+    links=0
+    plugin_jars=("$dir"/plugins/*.jar)
+    for plugin_jar in "${plugin_jars[@]}"; do
+      [[ -L "$plugin_jar" ]] && links=$((links + 1))
+    done
   else
     links=0
   fi
